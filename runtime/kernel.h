@@ -10,6 +10,7 @@
 #define KERN_R_CANCELLED 0xEC01u
 #define KERN_R_INVALID_ENUM 0xF001u
 #define KERN_R_BAD_STATE 0xFA01u
+#define KERN_R_SESSION_CLOSED 0xF601u
 #define KERN_H_CURRENT_THREAD 0xFFFF8000u
 #define KERN_WAITERS_BIT 0x40000000u
 
@@ -24,6 +25,8 @@ void kern_fiber_switch(Cpu *c);
 void kern_fiber_current(Cpu *c);
 
 uint64_t kern_threads_created(void);
+int kern_is_process_handle(uint32_t h);
+uint32_t kern_process_handle_new(void);    // a real handle to the process (GetInfo 65001)
 
 // The guest frame-pointer chain from c->x[29] to stderr.
 void kern_backtrace(const Cpu *c);

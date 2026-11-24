@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fs.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
@@ -58,6 +59,11 @@ static int *ovr_used, *obs_used;   // per linked table entry, plus probe overrid
 static PlatMutex plt_lock = PLAT_MUTEX_INIT;
 
 int ldr_count(void) { return nmods; }
+const RtLoaded *ldr_find(const char *name) {
+    for (int i = 0; i < nmods; i++)
+        if (!strcmp(mods[i].pub.name, name)) return &mods[i].pub;
+    return NULL;
+}
 const RtLoaded *ldr_module(int i) { return i >= 0 && i < nmods ? &mods[i].pub : NULL; }
 
 static uint32_t rd32(uint64_t a) { return LD32(a); }
@@ -273,9 +279,65 @@ static uint64_t decode_ctor_flag(const Mod *m) {
     return 0;
 }
 
+static void load_image(Mod *m, uint8_t *raw, size_t len, const RtLayoutEntry *lay);
+
 static void load_module(Mod *m, const char *dir, const RtLayoutEntry *lay) {
     size_t len;
     uint8_t *raw = ldr_read_verified(dir, lay->name, &len);
+    load_image(m, raw, len, lay);
+}
+
+// ---- KarPur: exefs plugins of mods (build/plugins.json, tools/mod_plugin.py)
+// A plugin (an exlaunch-style subsdkN of a mod) is in the layout after the game modules; it is loaded only when its
+// mod pack runs (TOTK_MOD_PACK, karpur.exe --mod), from mods/<mod>/exefs/<module> next to karpur.exe, checked against
+// the SHA-256 tools/mod_plugin.py recorded.
+static const RtPlugin *plugin_of(const char *module) {
+    for (int i = 0; i < rt_plugin_count; i++)
+        if (rt_plugins[i].module && !strcmp(rt_plugins[i].module, module)) return &rt_plugins[i];
+    return NULL;
+}
+
+static uint8_t *read_plugin(const RtPlugin *pl, size_t *len) {
+    char path[PLAT_PATH_MAX];
+    if (!plat_exe_path(path, sizeof path)) rt_fatal("loader: no executable path for plugin %s", pl->module);
+    char *cut = strrchr(path, '/'), *cut2 = strrchr(path, '\\');
+    if (cut2 > cut) cut = cut2;
+    size_t k = cut ? (size_t)(cut - path) + 1 : 0;
+    if (snprintf(path + k, sizeof path - k, "mods/%s/exefs/%s", pl->mod, pl->module) >= (int)(sizeof path - k))
+        rt_fatal("loader: plugin path too long");
+    uint8_t *p = read_file(path, len);
+    if (!p) rt_fatal("loader: mod %s: cannot read its plugin %s (run tools/mod_plugin.py again)", pl->mod, path);
+    uint8_t d[32];
+    char hex[65];
+    rt_sha256(p, *len, d);
+    hex32(d, hex);
+    if (strcmp(hex, pl->sha256))
+        rt_fatal("loader: mod %s: %s changed since it was lifted (SHA-256 %s); run tools/mod_plugin.py again", pl->mod,
+                 path, hex);
+    return p;
+}
+
+// rtld's image just below main, as on hardware, for QueryMemory only: never relocated or run. An exlaunch plugin
+// counts the modules it finds that way and takes the second one for main.
+static void load_rtld_image(const char *dir) {
+    size_t len;
+    uint8_t *raw = ldr_read_verified(dir, "rtld", &len);
+    Seg seg[3];
+    uint64_t size = nso_segments(raw, len, "rtld", seg);
+    uint64_t slot = (size + 0x1FFFFF) & ~0x1FFFFFull, base = MOD_MAIN_BASE - slot;
+    if (!plat_mem_reserve(base, slot, 0) || !plat_mem_commit(base, size))
+        rt_fatal("loader: the address range below main for rtld's image (%#llx) is taken", (unsigned long long)base);
+    for (int i = 0; i < 3; i++) nso_segment(raw, &seg[i], (uint8_t *)(uintptr_t)(base + seg[i].mem_off), "rtld", i);
+    free(raw);
+    uint64_t text = (seg[0].mem_off + seg[0].size + 0xFFF) & ~0xFFFull, data = seg[2].mem_off;
+    mem_extra_add(base, text, 3, 5);              // Code RX
+    mem_extra_add(base + text, data - text, 3, 1);   // Code R
+    mem_extra_add(base + data, size - data, 4, 3);   // CodeData RW
+    plat_mem_protect(base, data, PLAT_PROT_READ);
+    rt_log("loader: rtld image at %#llx (QueryMemory only, for exefs plugins)", (unsigned long long)base);
+}
+
+static void load_image(Mod *m, uint8_t *raw, size_t len, const RtLayoutEntry *lay) {
     Seg seg[3];
     uint64_t size = nso_segments(raw, len, lay->name, seg);
     if (size != lay->size)
@@ -534,8 +596,24 @@ void ldr_load(const char *exefs_dir) {
     if (nmods) rt_fatal("ldr_load called twice");
     if (!mem_layout()->pool) rt_fatal("ldr_load before mem_init");
     if (rt_layout_count > MOD_COUNT) rt_fatal("loader: %d modules in the layout", rt_layout_count);
-    for (int i = 0; i < rt_layout_count; i++) load_module(&mods[i], exefs_dir, &rt_layout[i]);
-    nmods = rt_layout_count;
+    const char *pack = rt_mod_pack();
+    int plugins = 0;
+    for (int i = 0; i < rt_layout_count; i++) {
+        const RtPlugin *pl = plugin_of(rt_layout[i].name);
+        if (!pl) {
+            load_module(&mods[nmods++], exefs_dir, &rt_layout[i]);
+            continue;
+        }
+        if (!pack || strcmp(pack, pl->mod)) {
+            rt_log("loader: plugin %s of mod %s not loaded (mod pack %s)", pl->module, pl->mod, pack ? pack : "none");
+            continue;
+        }
+        if (!plugins++) load_rtld_image(exefs_dir);
+        size_t len;
+        uint8_t *raw = read_plugin(pl, &len);
+        load_image(&mods[nmods++], raw, len, &rt_layout[i]);
+        rt_log("loader: plugin %s of mod %s loaded at %#llx", pl->module, pl->mod, (unsigned long long)rt_layout[i].base);
+    }
     ovr_used = calloc(hostfn_table_size(0) + 1, sizeof(int));
     obs_used = calloc(hostfn_table_size(1) + 1, sizeof(int));
     for (int i = 0; i < nmods; i++) {

@@ -15,6 +15,9 @@ namespace KarPurLinux;
 
 sealed class MainWindow : Window
 {
+    internal const string IssuesUrl = "https://github.com/privacymatters42069-del/PokiNative/issues/new";
+    internal const string PullRequestsUrl = "https://github.com/privacymatters42069-del/PokiNative/pulls";
+
     readonly UserState state;
     readonly ContentControl page = new();
     readonly ScrollViewer contentScroll = new();
@@ -444,8 +447,8 @@ sealed class MainWindow : Window
             CornerRadius = new CornerRadius(14), Padding = new Thickness(20),
             Child = Stack(Text("Experimental Linux / Steam Deck release", 19, "#FFD3D0"),
                 Text("Missing trees, disappearing scenery and performance problems are still being investigated. Linux and Vulkan contributors: please report what you see, include your device and graphics driver, and share logs if you can. Pull requests are welcome.", 14, "#F1DAE5"),
-                Action("Report an issue on GitHub", () => { Install.Open("https://github.com/Grunttanamo/KarPur/issues/new/choose"); return Task.CompletedTask; }),
-                Action("Contribute on GitHub", () => { Install.Open("https://github.com/Grunttanamo/KarPur/pulls"); return Task.CompletedTask; }))
+                Action("Report an issue on GitHub", () => { Install.Open(IssuesUrl); return Task.CompletedTask; }),
+                Action("Contribute on GitHub", () => { Install.Open(PullRequestsUrl); return Task.CompletedTask; }))
         });
         Control? team = TeamCards();
         if (team != null) content.Children.Add(team);

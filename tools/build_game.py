@@ -280,6 +280,12 @@ def module_glue(layout, linked, hashes, paths, application_id):
     out += ['const RtFileHash rt_exefs_sha256[] = {']
     out += [f'    {{{c_string(f)}, {c_string(h)}}},' for f, h in sorted(hashes.items())]
     out += ['};', f'const int rt_exefs_sha256_count = {len(hashes)};', '']
+    # Exefs plugins of installed mods (build/plugins.json, tools/mod_plugin.py): loaded only with their mod pack
+    plug = [e for e in plugin_entries() if e['module'] in {n for n, _, _ in layout}]
+    out += ['const RtPlugin rt_plugins[] = {']
+    out += [f'    {{{c_string(e["module"])}, {c_string(e["mod"])}, {c_string(e["sha256"])}, {c_string(e["set"])}}},'
+            for e in plug] or ['    {0, 0, 0, 0},']
+    out += ['};', f'const int rt_plugin_count = {len(plug)};', '']
     for name in ('exefs', 'romfs', 'profile'):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
     # rt_game_version selects TotK's per-version constants in the runtime; 0 is none of them.
@@ -289,6 +295,13 @@ def module_glue(layout, linked, hashes, paths, application_id):
 
 
 EXEFS_FILES = ('main', 'sdk', 'subsdk0', 'rtld', 'main.npdm')
+
+
+def plugin_entries():
+    """build/plugins.json (recomp/plugins.py), [] without it."""
+    sys.path.insert(0, str(ROOT / 'recomp'))
+    import plugins
+    return plugins.load(plugins.DEFAULT)
 
 
 def exefs_hashes(exefs):

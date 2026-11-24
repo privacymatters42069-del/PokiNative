@@ -1,6 +1,6 @@
 // karpur.exe entry: reserves the guest address space, parses the command line and runs one mode.
 //
-//   karpur.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+//   karpur.exe [--exefs DIR] [--romfs DIR] [--profile DIR] [--mod NAME] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
@@ -455,7 +455,7 @@ static int selftest(void) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--mod NAME] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
@@ -524,6 +524,9 @@ int main(int argc, char **argv) {
             double s = strtod(argv[i], &end);
             if (*end || !(s > 0) || s > 1e6) return usage(argv[0]);
             cfg.seconds = s;
+        } else if (!strcmp(argv[i], "--mod")) {   // a mod pack for this run only (TOTK_MOD_PACK; not written to the ini)
+            if (++i == argc) return usage(argv[0]);
+            plat_setenv("TOTK_MOD_PACK", argv[i]);
         } else if (!strcmp(argv[i], "--shot")) {
             if (++i == argc) return usage(argv[0]);
             cfg.shot = argv[i];

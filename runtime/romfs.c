@@ -14,7 +14,7 @@
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
 // after the RomFS's own files, file_count + k in path order). The directories, in this order: TOTK_ROMFS_PATCHES and
-// TOTK_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// TOTK_ROMFS_MODS (unset: romfs-mods next to romfs-index.bin when it has a manifest); "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
 #include <stdio.h>
@@ -38,7 +38,7 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-typedef struct { uint64_t index, size; char *path, *name; Identity id; } Overlay;
+typedef struct { uint64_t index, size; char *path, *name; Identity id; int opened; } Overlay;   // opened: logged
 
 static uint8_t *index_bytes;
 static size_t index_size;
@@ -46,6 +46,7 @@ static uint64_t file_count, strings_offset;
 static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
+static char pack_dir[2100];          // mods/<TOTK_MOD_PACK> next to romfs-index.bin, empty = no mod pack
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
 static char mount_name[32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
@@ -423,7 +424,57 @@ static void overlay_init(void) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
-    const char *dirs[2] = {patches, cfg_get("TOTK_ROMFS_MODS")};
+    // TOTK_ROMFS_MODS unset: romfs-mods next to romfs-index.bin if it has a manifest (tools/mod_overlay.py builds it
+    // from a mod's romfs folder, e.g. Pokemon Compass with its own arc/data.trpfd and loose files); "0" = none.
+    // A mod pack (TOTK_MOD_PACK=<name>, karpur.exe --mod <name>) brings its own overlay in mods/<name>/romfs instead.
+    char mods_def[2100];
+    const char *mods = cfg_get("TOTK_ROMFS_MODS");
+    const char *pack = rt_mod_pack();
+    if (pack) {
+        if (snprintf(pack_dir, sizeof pack_dir, "%s/mods/%s", index_dir, pack) >= (int)sizeof pack_dir)
+            rt_fatal("mod pack %s: path too long", pack);
+        if (!plat_dir_exists(pack_dir))
+            rt_fatal("mod pack %s: no folder %s", pack, pack_dir);
+        rt_log("mod pack %s: %s (own saves in save-%s)", pack, pack_dir, pack);
+        // patch-sets.txt: one code patch set per line (tools/fps_patches.py) that the pack needs, turned on here,
+        // before the game's code first runs a site (fs_init comes before the game's own start-up)
+        char sets_path[2200];
+        uint64_t sn = 0;
+        char *sets = snprintf(sets_path, sizeof sets_path, "%s/patch-sets.txt", pack_dir) < (int)sizeof sets_path
+                         ? (char *)plat_file_read(sets_path, &sn) : NULL;
+        for (char *p = sets, *end = sets ? sets + sn : NULL; p && p < end;) {
+            char *nl = memchr(p, '\n', (size_t)(end - p));
+            char *e = nl ? nl : end;
+            char name[64];
+            size_t k = (size_t)(e - p);
+            while (k && (p[k - 1] == '\r' || p[k - 1] == ' ')) k--;
+            if (k && k < sizeof name && *p != '#') {
+                memcpy(name, p, k), name[k] = 0;
+                int set = rt_patch_set(name);
+                if (set < 0) rt_log("mod pack %s: code patch set %s is not in this build (re-lift with tools/fps_patches.py)", pack, name);
+                else {
+                    rt_patch_enable(set);
+                    rt_log("mod pack %s: code patch set %s on", pack, name);
+                }
+            }
+            p = e + 1;
+        }
+        free(sets);
+        if (!mods) {
+            if (snprintf(mods_def, sizeof mods_def, "%s/romfs/manifest.tsv", pack_dir) >= (int)sizeof mods_def ||
+                !plat_file_exists(mods_def))
+                rt_fatal("mod pack %s: no %s/romfs/manifest.tsv (tools/mod_overlay.py makes it)", pack, pack_dir);
+            mods_def[strlen(mods_def) - strlen("/manifest.tsv")] = 0;
+            mods = mods_def;
+        }
+    }
+    if (!mods && !pack && snprintf(mods_def, sizeof mods_def, "%s/romfs-mods/manifest.tsv", index_dir) < (int)sizeof mods_def &&
+        plat_file_exists(mods_def)) {
+        mods_def[strlen(mods_def) - strlen("/manifest.tsv")] = 0;
+        mods = mods_def;
+        rt_log("RomFS overlay: mods from %s", mods);
+    }
+    const char *dirs[2] = {patches, mods};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
     heapdef_overlay();
@@ -548,6 +599,21 @@ const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size) {
     return entry_name(e);
 }
 
+// TOTK_MOD_PACK: a folder name (letters, digits, '-', '_'); empty, "0" or "off" = none. Another name stops the start.
+const char *rt_mod_pack(void) {
+    const char *p = cfg_get("TOTK_MOD_PACK");
+    if (!p || !*p || !strcmp(p, "0") || !strcmp(p, "off")) return NULL;
+    size_t n = strlen(p);
+    for (size_t i = 0; i < n; i++)
+        if (!((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= 'A' && p[i] <= 'Z') || (p[i] >= '0' && p[i] <= '9') ||
+              p[i] == '-' || p[i] == '_'))
+            rt_fatal("TOTK_MOD_PACK '%s': use a folder name (letters, digits, - and _)", p);
+    if (n > 64) rt_fatal("TOTK_MOD_PACK '%s': name too long", p);
+    return p;
+}
+
+const char *romfs_mod_pack_dir(void) { return *pack_dir ? pack_dir : NULL; }
+
 const char *romfs_image_path(void) { return image_file; }
 
 size_t romfs_overlay_count(void) { return noverlay; }
@@ -596,6 +662,15 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
         if (f) id = identity_of(f);
         if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
+        // The first open of each overlay file goes to the log (the first 48, then every 100th), so a run shows
+        // which files of a mod the game actually reads.
+        static unsigned nopened;
+        plat_mutex_lock(&lock);
+        int first = !overlays[ov - 1].opened;
+        overlays[ov - 1].opened = 1;
+        unsigned k = first ? ++nopened : 0;
+        plat_mutex_unlock(&lock);
+        if (k && (k <= 48 || k % 100 == 0)) rt_log("RomFS overlay: the game opened %s (%u overlay files so far)", o->name, k);
     }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)

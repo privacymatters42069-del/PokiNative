@@ -46,6 +46,7 @@ import flags  # noqa: E402
 import hostmem  # noqa: E402
 import jumptables  # noqa: E402
 import patches  # noqa: E402
+import plugins  # noqa: E402
 import regs  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 from layout import layout, write as write_layout  # noqa: E402
@@ -64,6 +65,16 @@ EST_SIMD = 75
 EST_SIMD_LDST = 48
 EST_FN = 38          # per function: signature, FN_ENTER, closing brace
 EST_BR_LABELS = 10   # per instruction of a function with a `br`: switch cases, or labels if it falls back
+
+
+class PatchJump:
+    """A plugin hook's final @jump (target) or @ret (target None) in a patch alternative (recomp/patches.py)."""
+    kind = 'pjump'
+    code = ''
+    cond = None
+
+    def __init__(self, target):
+        self.target = target
 
 
 def fname(a):
@@ -212,6 +223,8 @@ def _fde_of(x, fde_lo, fde_hi):
 def inner_mask(starts, fde_lo, fde_hi):
     """Starts that lie strictly inside an .eh_frame function (extra entries into a function lifted whole)."""
     k = _fde_of(starts, fde_lo, fde_hi)
+    if not len(fde_lo):   # no .eh_frame_hdr (an exefs plugin)
+        return np.zeros(len(starts), dtype=bool)
     return (k >= 0) & (starts > fde_lo[np.maximum(k, 0)])
 
 
@@ -328,7 +341,7 @@ class Emitter:
         self.starts = starts
         self.setjmp = setjmp           # KarPur: addresses whose call is a setjmp call (setjmp_targets)
         self.uses_setjmp = False
-        self.patched = patched or {}   # {address: (set index, [replacement words])} (recomp/patches.py)
+        self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
@@ -369,9 +382,19 @@ class Emitter:
                 raise ValueError(f'{entry + 4 * i:#x}: asm instruction from the portable lifter')
         return labels, tables
 
-    def replacements(self, a):
-        """Lifted replacement words of the patched site a."""
-        return [self.mod.lifter.lift(w, a) for w in self.patched[a][1]]
+    def replacements(self, a, alt=None):
+        """Lifted replacement words of the patched site a: of alternative alt, or of all alternatives in one list. A
+        final ('jump', target) or ('ret',) of a plugin hook becomes a pseudo-instruction of kind 'pjump' / 'ret'."""
+        out = []
+        for j, (_, words) in enumerate(self.patched[a]):
+            if alt is not None and j != alt:
+                continue
+            for w in words:
+                if isinstance(w, tuple):
+                    out.append(PatchJump(w[1]) if w[0] == 'jump' else PatchJump(None))
+                else:
+                    out.append(self.mod.lifter.lift(w, a))
+        return out
 
     @staticmethod
     def flow(insns, entry, end, tables):
@@ -413,6 +436,8 @@ class Emitter:
                 effects.append(self.patched_effect(ins, a))
                 if any(r.kind == 'bl' for r in self.replacements(a)):
                     calls.add(i)
+                if any(r.kind in ('pjump', 'ret') for r in self.replacements(a)):
+                    exits.add(i)   # a plugin hook leaves the function here
             else:
                 effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
         effects.append((False, None))
@@ -421,17 +446,21 @@ class Emitter:
     def patched_effect(self, ins, a):
         """Flag effect of a patched site: both alternatives must have the same one, in at most one word each."""
         alts = []
-        for words in ([ins], self.replacements(a)):
-            fx = [flags.effect(w.code or '') for w in words if w.kind == 'op']
+        for words in [[ins]] + [self.replacements(a, j) for j in range(len(self.patched[a]))]:
+            fx = [flags.effect(w.cond if w.kind == 'bcond' else w.code or '') for w in words
+                  if w.kind in ('op', 'bcond')]
             fx = [e for e in fx if e[0] or e[1]]
             if len(fx) > 1:
                 raise patches.PatchError(f'{a:#x}: several flag-using words in one alternative')
             alts.append(fx[0] if fx else (False, None))
-        if alts[0][1] != alts[1][1]:
-            raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({alts[0][1]}, {alts[1][1]})')
-        if (alts[0][1] or alts[0][0] or alts[1][0]) and ins.kind == 'bl':
+        hooks = [any(r.kind in ('pjump', 'ret') for r in self.replacements(a, j)) for j in range(len(self.patched[a]))]
+        for j, alt in enumerate(alts[1:]):
+            # a plugin hook that leaves the function writes no flags the function reads afterwards
+            if alt[1] != alts[0][1] and not (hooks[j] and alt[1] is None):
+                raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({alts[0][1]}, {alt[1]})')
+        if any(x[1] or x[0] for x in alts) and ins.kind == 'bl':
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
-        return alts[0][0] or alts[1][0], alts[0][1]
+        return any(x[0] for x in alts), alts[0][1]
 
     def function(self, entry, end, lo=None):
         """(lines of C, referenced function starts) for the guest function [entry, end). With lo < entry the C
@@ -517,23 +546,49 @@ class Emitter:
             code = fx(i, code)
             return f'{spill}{code}{reload}' if regs.ESCAPE.search(code) else code
 
+        def original(i, ins, a):
+            """C of the unpatched instruction of a patched site."""
+            k = ins.kind
+            if k == 'op':
+                return op(i, ins.code)
+            if k == 'bl':
+                return call(ins.target, a)
+            # a plugin hook may sit on any instruction (exlaunch patches function entries and inline sites)
+            if k == 'b':
+                return jump(ins.target, i)
+            if k == 'bcond':
+                return f'if ({fx(i, ins.cond)}) {{ {jump(ins.target, i)} }}'
+            if k == 'ret':
+                return f'{spill}return;'
+            if k == 'blr':
+                return f'c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}'
+            if k == 'br' and not tables.get(a):
+                return f'{publish(i)}{spill}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);'
+            raise patches.PatchError(f'{a:#x}: patched instruction is a {k}')
+
         def patch(i, ins, a):
-            """if (switch) { replacement } else { original } for a patched site (recomp/patches.py)."""
-            k, words = self.patched[a]
-            if ins.kind not in ('op', 'bl'):
-                raise patches.PatchError(f'{a:#x}: patched instruction is a {ins.kind}')
-            repl = []
-            for j, (w, r) in enumerate(zip(words, self.replacements(a))):
-                if r.kind == 'op':
-                    repl.append(op(i, r.code))
-                elif r.kind == 'bl' and j == len(words) - 1:
-                    repl.append(call(r.target, a))
-                else:
-                    raise patches.PatchError(f'{a:#x}: replacement word {w:08x} is a {r.kind}')
-            orig = op(i, ins.code) if ins.kind == 'op' else call(ins.target, a)
+            """if (switch) { replacement } else if ... else { original } for a patched site (recomp/patches.py)."""
+            out = ''
+            for alt, (k, words) in enumerate(self.patched[a]):
+                repl = []
+                lifted = self.replacements(a, alt)
+                for j, (w, r) in enumerate(zip(words, lifted)):
+                    last = j == len(words) - 1
+                    if r.kind == 'op':
+                        repl.append(op(i, r.code))
+                    elif r.kind == 'bl' and last:
+                        repl.append(call(r.target, a))
+                    elif r.kind == 'pjump' and last:
+                        # an exefs plugin's hook: its first run is logged once (plugin.c)
+                        repl.append(f'{{ static int hit_; if (__builtin_expect(!hit_, 0)) {{ hit_ = 1; '
+                                    f'rt_plugin_hook_hit({hx(a)}); }} }} ')
+                        repl.append(f'{spill}return;' if r.target is None else jump(r.target, i))
+                    else:
+                        raise patches.PatchError(f'{a:#x}: replacement word {w} is a {r.kind}')
+                out += f'if (rt_patch_on[{k}]) {{ {" ".join(repl)} }} else '
             self.uses_patches = True
             self.stats['patched_sites'] += 1
-            return f'    if (rt_patch_on[{k}]) {{ {" ".join(repl)} }} else {{ {orig} }}'
+            return f'    {out}{{ {original(i, ins, a)} }}'
 
         body = []   # (instruction index or None for a label, line); a line belongs to the instruction it lifts
 
@@ -674,8 +729,8 @@ def _worker_init(mods, starts, table, opts, setjmp=None):
 def _emitter(name):
     e = _W['emitters'].get(name)
     if e is None:
-        path, base = _W['mods'][name]
-        mod = Module(name, path, base, 'c')
+        path, base, code, entries = _W['mods'][name]
+        mod = Module(name, path, base, 'c', code=code, entries=entries)
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
                                            spins=_W['patches'].spins_for(name, base),
@@ -750,7 +805,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
     ap.add_argument('--out', type=Path, required=True)
-    ap.add_argument('--modules', default='main,subsdk0,sdk')
+    ap.add_argument('--modules', default='main,subsdk0,sdk,plugins',
+                    help="modules to emit; 'plugins' stands for every plugin of --plugins")
     ap.add_argument('--jobs', type=int, help='emit workers (default: by free memory and CPU count)')
     ap.add_argument('--limit', type=int, default=0, help='emit only the first N functions of each module')
     ap.add_argument('--chunk-fns', type=int, default=3000, help='functions per chunk at most')
@@ -758,6 +814,9 @@ def main():
     ap.add_argument('--big-fn', type=int, default=300000, help='estimated bytes of C from which a function gets '
                                                                'its own chunk')
     ap.add_argument('--patches', type=Path, help='code patch table (recomp/patches.py)')
+    ap.add_argument('--plugins', type=Path, default=plugins.DEFAULT,
+                    help='exefs plugins of installed mods (recomp/plugins.py; default build/plugins.json if present): '
+                         'their NSOs join the layout after the game modules and their hook tables load after --patches')
     ap.add_argument('--inner-entry-test', action='store_true',
                     help='test only: lift every function after the first as an entry into a range starting at the '
                          'previous start (tests/lifter/test_lifter.py --inner)')
@@ -770,11 +829,22 @@ def main():
     opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust}
 
     t0 = time.perf_counter()
-    mods = layout(args.exefs)
+    plug = plugins.load(args.plugins)
+    plugin_path = {e['module']: e['nso'] for e in plug}
+    for e in plug:
+        if not e['nso'].is_file():
+            raise SystemExit(f'plugin of mod {e["mod"]}: {e["nso"]} not found (tools/mod_plugin.py sets it up)')
+    mods = layout(args.exefs, plugins.layout_entries(plug))
     write_layout(mods, args.out)
-    table = patches.load(args.patches, mods) if args.patches else patches.Table()
+    tables = ([args.patches] if args.patches else []) + [e['hooks'] for e in plug if e['hooks'] and e['hooks'].is_file()]
+    table = patches.load(tables, mods) if tables else patches.Table()
+    if plug:
+        print(f'plugins: {", ".join(e["module"] + " of mod " + e["mod"] for e in plug)}; patch tables: '
+              f'{", ".join(str(t) for t in tables) or "none"}', file=sys.stderr, flush=True)
     write_if_changed(args.out / 'patches.h', patches.header_text(table, GENERATED_MARKER))
-    want = args.modules.split(',')
+    want = [m for m in args.modules.split(',') if m != 'plugins']
+    if 'plugins' in args.modules.split(','):
+        want += [e['module'] for e in plug]
     unknown = set(want) - {n for n, _, _ in mods}
     if unknown:
         raise SystemExit(f'not in {args.exefs}: {", ".join(sorted(unknown))}')
@@ -784,9 +854,9 @@ def main():
         if name not in want:
             continue
         t = time.perf_counter()
-        path = args.exefs / name
-        mod = Module(name, path, base, 'c')
-        patches.check(table, mod, name)
+        path = plugin_path.get(name, args.exefs / name)
+        patches.check(table, Module(name, path, base, 'c'), name)
+        mod = Module(name, path, base, 'c', code=table.code_for(name), entries=table.entries_for(name, base))
         starts, dstats = discover(mod)
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
@@ -801,7 +871,7 @@ def main():
         for number, (i0, i1) in enumerate(chunks):
             fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist(), los[i0:i1].tolist()))
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
-        paths[name] = (str(path), base)
+        paths[name] = (str(path), base, table.code_for(name), table.entries_for(name, base))
         starts_abs[name] = abs_starts
         setjmp[name] = sorted(setjmp_targets(mod, abs_starts))
         info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi, 'emitted': abs_starts[:n].tolist(),

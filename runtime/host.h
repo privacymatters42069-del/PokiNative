@@ -143,6 +143,10 @@ uint32_t mem_set_attribute(uint64_t a, uint64_t n, uint32_t mask, uint32_t at); 
 uint32_t mem_map(uint64_t dst, uint64_t src, uint64_t n);                       // 0x04
 uint32_t mem_unmap(uint64_t dst, uint64_t src, uint64_t n);                     // 0x05
 uint32_t mem_query(uint64_t a, RtMemoryInfo *out);                              // 0x06
+int mem_extra_add(uint64_t base, uint64_t size, uint32_t state, uint32_t perm);  // plugin.c: a region QueryMemory reports
+void mem_extra_remove(uint64_t base);
+int mem_commit_free(uint64_t a, uint64_t n);               // plugin.c: commit free guest pages read-write; 1 on success
+void mem_decommit_free(uint64_t a, uint64_t n);
 uint32_t mem_map_physical(uint64_t a, uint64_t n);                              // 0x2C
 uint32_t mem_unmap_physical(uint64_t a, uint64_t n);                            // 0x2D
 int mem_info(uint32_t id, uint64_t *out);                  // GetInfo memory ids 2-7, 12-17, 21, 22, 28; 0 if not a memory id
@@ -188,7 +192,12 @@ typedef struct {
 } RtLoaded;
 void ldr_load(const char *exefs_dir);                      // load, relocate (overrides applied), seal; once
 int ldr_count(void);
-const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
+const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk, then loaded exefs plugins
+const RtLoaded *ldr_find(const char *name);                // loaded module by name, NULL if not loaded
+// Exefs plugins (plugin.c): MapProcessMemory/UnmapProcessMemory, and what a plugin's init wrote into code.
+int plugin_svc(Cpu *c, uint32_t imm);                        // 1 if imm is a process memory SVC (handled)
+void plugin_init_done(const RtLoaded *m);                    // after a plugin module's DT_INIT returned
+void plugin_inits_done(void);                                // after all module inits
 void lod_init(void);                                       // KarPur lod.c: from rt_patches_init
 void sv_detail_present(void);                              // Violet model detail thresholds, once per presented frame
 void data_patch_init(void);                                // KarPur data_patch.c: from romfs.c init
@@ -218,6 +227,11 @@ uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len);   //
 typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
+// Exefs plugins of installed mods (build/plugins.json): module name (subsdkN), mod pack folder, SHA-256 of
+// mods/<mod>/exefs/<module>, the patch set of its captured hooks. loader.c loads one only with its mod pack.
+typedef struct { const char *module, *mod, *sha256, *set; } RtPlugin;
+extern const RtPlugin rt_plugins[];
+extern const int rt_plugin_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
 extern const uint64_t rt_application_id;                  // the base game's title ID (tools/build_game.py)
 extern const int rt_game_version;                          // the game build: 111 (1.1.1), 121 (1.2.1) or 143 (1.4.3)

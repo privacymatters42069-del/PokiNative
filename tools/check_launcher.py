@@ -64,9 +64,10 @@ def strict_reads():
 def launcher_keys():
     """{key: section} for every key the launcher writes to karpur.ini."""
     out = {}
-    for p in sorted(LAUNCHER.glob('*.cs')):
-        for section, key in INI_SET.findall(p.read_text(encoding='utf-8', errors='replace')):
-            out[key] = section
+    for directory in (LAUNCHER, ROOT / 'launcher-linux'):
+        for p in sorted(directory.glob('*.cs')):
+            for section, key in INI_SET.findall(p.read_text(encoding='utf-8', errors='replace')):
+                out[key] = section
     return out
 
 
@@ -134,6 +135,23 @@ def main():
     written = {k.upper() for k in keys if k != 'bind_'}
     check('keys', unknown + sorted(k for k in written if k not in known),
           f'{len(written)} keys written by the launcher, {len(known)} known to the runtime')
+
+    readback = (RUNTIME / 'readback_watch.c').read_text(encoding='utf-8')
+    guard_default = re.search(r'guard\s*=\s*rt_knob\("READBACK_GUARD",\s*"1"\)', readback)
+    guard_writer = re.compile(
+        r'ini\.Set\("performance",\s*"readback_guard",\s*'
+        r'ini\.Get\("readback_guard"\)\s*==\s*"0"\s*\?\s*"0"\s*:\s*"1"\s*\)'
+    )
+    guard_problems = []
+    if not guard_default:
+        guard_problems.append('runtime default is not enabled')
+    if sections.get('READBACK_GUARD') != 'performance':
+        guard_problems.append('runtime save section is not performance')
+    for platform, path in (('Windows', LAUNCHER / 'MainForm.cs'),
+                           ('Linux', ROOT / 'launcher-linux' / 'Services.cs')):
+        if not guard_writer.search(path.read_text(encoding='utf-8')):
+            guard_problems.append(f'{platform} launcher does not write the default')
+    check('readback guard', guard_problems, 'enabled by default in runtime and both launchers')
 
     missing_tools = [t for t in build_tools() if not (ROOT / t).is_file()]
     isolated = []

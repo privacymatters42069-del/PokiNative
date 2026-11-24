@@ -569,13 +569,17 @@ static void storage_init(void *param) {
     char p[PATH_CAP];
     make_dirs(profile);
     account_uid(uid);
-    snprintf(p, sizeof p, "%s/save", profile);
+    // A mod pack (TOTK_MOD_PACK, romfs.c) keeps its saves apart: save-<name>, save-<name>-tx, save-<name>-backup
+    const char *pack = rt_mod_pack();
+    char save_dir[100];
+    snprintf(save_dir, sizeof save_dir, pack ? "save-%s" : "save", pack);
+    snprintf(p, sizeof p, "%s/%s", profile, save_dir);
     make_dirs(p);
-    need(snprintf(save_root, sizeof save_root, "%s/save/%016llx%016llx", profile, (unsigned long long)uid[1],
+    need(snprintf(save_root, sizeof save_root, "%s/%s/%016llx%016llx", profile, save_dir, (unsigned long long)uid[1],
                   (unsigned long long)uid[0]) < (int)sizeof save_root, "save path");
-    need(snprintf(tx_root, sizeof tx_root, "%s/save-tx", profile) < (int)sizeof tx_root, "save path");
+    need(snprintf(tx_root, sizeof tx_root, "%s/%s-tx", profile, save_dir) < (int)sizeof tx_root, "save path");
     snprintf(work_root, sizeof work_root, "%s/work", tx_root);
-    snprintf(backup_root, sizeof backup_root, "%s/save-backup", profile);
+    snprintf(backup_root, sizeof backup_root, "%s/%s-backup", profile, save_dir);
     make_dirs(tx_root);
     make_dirs(backup_root);
     snprintf(new_root, sizeof new_root, "%s/new", tx_root);

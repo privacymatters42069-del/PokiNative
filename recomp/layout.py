@@ -8,6 +8,10 @@ build read.
 Modules are placed in Horizon's load order (rtld is dropped; the host links the modules):
 main, subsdk0..9, sdk. Each base is aligned to 2 MiB. Everything must stay below 2^39, the limit of the addresses
 IPC buffers can encode.
+
+Exefs plugins of a mod (an exlaunch-style subsdkN NSO from a mod folder, tools/mod_plugin.py, listed in
+build/plugins.json) come after every game module, at the next free 2 MiB boundary. On hardware they would sit before
+sdk; placing them last keeps every game module's base, so lifting a plugin never moves the game's own code.
 """
 import json
 from pathlib import Path
@@ -24,14 +28,21 @@ def align_up(v, a=ALIGN):
     return (v + a - 1) & ~(a - 1)
 
 
-def layout(exefs):
-    """[(name, base, size)] for the modules present in the ExeFS directory, in load order."""
+def layout(exefs, plugins=()):
+    """[(name, base, size)] for the modules present in the ExeFS directory, in load order, then the plugins
+    [(name, path)] (plugins.py) after them."""
     exefs = Path(exefs)
     out, base = [], FIRST_BASE
     for name in ORDER:
         path = exefs / name
         if not path.exists():
             continue
+        size = Nso(str(path)).size
+        out.append((name, base, size))
+        base = align_up(base + size)
+    for name, path in plugins:
+        if any(n == name for n, _, _ in out):
+            raise ValueError(f'plugin module {name} has the name of a module already in the layout')
         size = Nso(str(path)).size
         out.append((name, base, size))
         base = align_up(base + size)

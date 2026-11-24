@@ -1,0 +1,123 @@
+// TOTK_LIGHTING_HALF: lighting.comp's occlusion and bounce light, measured at every second pixel in x and y
+// (a quarter of the samples). Writes rgb = bounce light already scaled, a = occlusion factor; lighting_apply.comp
+// spreads it back over the full frame along depth edges.
+//
+// Original header:
+// Experimental screen-space ambient occlusion and one-bounce light approximation.
+// Runs on the tone-mapped scene before its HUD and before DLAA / FSR 2. No game-owned image is enlarged.
+//
+// Occlusion is measured in view space: each pixel's position comes from its depth and the projection, its normal from
+// the nearer of its depth neighbours, and a sample occludes only when it lies above that surface (along the normal)
+// and within a 3D radius, with a smooth falloff. The reach is wide (a few percent of the screen height, limited in view
+// units) so the result is broad, soft shading where surfaces meet rather than thin lines in small creases. Each pixel
+// turns its sample pattern by interleaved gradient noise that changes every frame; the temporal anti-aliasing after
+// this pass averages that noise away (with no temporal AA the noise stays visible as fine grain).
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D half_depth;   // view distance at every 2nd pixel (lighting_depth.comp)
+layout(set = 0, binding = 1) uniform sampler2D scene_color;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D result_half;
+layout(push_constant) uniform P {
+    vec4 projection; // p22, p23, p32, clip depth -w..w
+    vec4 controls;   // width, height, AO level, indirect-light level
+    vec4 camera;     // 1 / p00, 1 / p11 (view x and y per NDC unit at distance 1), frame number, unused
+} p;
+
+float view_distance(float depth) {
+    float ndc = p.projection.w > 0.5 ? depth * 2.0 - 1.0 : depth;
+    float divisor = ndc * p.projection.z - p.projection.x;
+    return abs(divisor) > 1e-6 ? abs(p.projection.y / divisor) : 1e8;
+}
+
+// View-space position of a pixel; x and y share the sign convention of every other pixel, which is all the
+// differences below need.
+vec3 view_position(vec2 q, float z) {
+    vec2 ndc = (q + 0.5) / p.controls.xy * 2.0 - 1.0;
+    return vec3(ndc * p.camera.xy * z, z);
+}
+
+// q is a full-size pixel with even coordinates; its view distance was stored at q / 2.
+float depth_at(ivec2 q) { return texelFetch(half_depth, q >> 1, 0).r; }
+
+// The smaller of the two one-sided differences, so a pixel on a silhouette takes its slope from its own surface.
+vec3 nearer_step(vec3 c, vec3 a, vec3 b) {
+    return abs(a.z - c.z) < abs(b.z - c.z) ? c - a : b - c;
+}
+
+// Interleaved gradient noise (Jimenez 2014), moved along each frame.
+float ign(vec2 q, float frame) {
+    q += 5.588238 * mod(frame, 64.0);
+    return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+    ivec2 hxy = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(p.controls.xy);
+    ivec2 xy = hxy * 2;
+    if (any(greaterThanEqual(xy, size))) return;
+    vec4 color = texelFetch(scene_color, xy, 0);
+    float center = depth_at(xy);
+    if (center > 5000.0 || center < 0.01) { imageStore(result_half, hxy, vec4(0.0, 0.0, 0.0, 1.0)); return; }
+
+    ivec2 hi = size - 1;
+    vec3 c = view_position(vec2(xy), center);
+    hi = (hi >> 1) << 1;   // even pixels only: those are the ones with a stored depth
+    ivec2 l = clamp(xy - ivec2(2, 0), ivec2(0), hi), r = clamp(xy + ivec2(2, 0), ivec2(0), hi);
+    ivec2 d = clamp(xy - ivec2(0, 2), ivec2(0), hi), u = clamp(xy + ivec2(0, 2), ivec2(0), hi);
+    vec3 dx = nearer_step(c, view_position(vec2(l), depth_at(l)), view_position(vec2(r), depth_at(r)));
+    vec3 dy = nearer_step(c, view_position(vec2(d), depth_at(d)), view_position(vec2(u), depth_at(u)));
+    vec3 n = cross(dx, dy);
+    float nl = length(n);
+    n = nl > 1e-12 ? n / nl : -normalize(c);
+    if (dot(n, c) > 0.0) n = -n;   // towards the camera
+    // The flat normal of the pixel's own triangle, unbent: a sample on the same flat surface then lies exactly on its
+    // plane and never occludes. Bending it toward the camera (as before 2026-11-22) tilted that plane, so each triangle
+    // of a low-poly face or hand darkened by its own angle to the view and showed as a flat patch.
+
+    float ao_level = p.controls.z, gi_level = p.controls.w;
+    float level = max(ao_level, gi_level);
+    int dirs = level < 1.5 ? 4 : level < 2.5 ? 6 : 8;
+    const int steps = 3;
+    // Reach: 4% of the screen height, but no more than about a body width in view units (5% of the distance at the
+    // smallest, so far scenery keeps some), so it stays a contact effect and does not grey whole walls.
+    float px_per_unit = p.controls.y / (2.0 * center * p.camera.y);
+    float world = clamp(0.04 * p.controls.y / px_per_unit, 0.05 * center * 0.1, 0.6);
+    float radius = clamp(world * px_per_unit, 2.0, 0.08 * p.controls.y);
+    world = radius / px_per_unit;
+
+    float noise = ign(vec2(hxy), p.camera.z);   // half-size coordinates: the pattern needs neighbouring cells
+    float jitter = ign(vec2(hxy.yx) + 17.0, p.camera.z);
+    float occlusion = 0.0, weight = 0.0;
+    vec3 bounce = vec3(0.0);
+    float bounce_w = 0.0;
+    for (int i = 0; i < dirs; ++i) {
+        float a = (float(i) + noise) * (6.2831853 / float(dirs));
+        vec2 dir = vec2(cos(a), sin(a));
+        for (int s = 0; s < steps; ++s) {
+            float t = (float(s) + jitter) / float(steps);     // 0..1 along the reach, spread by the second noise
+            vec2 q = vec2(xy) + dir * max(t * t * radius, 1.0);   // denser near the pixel
+            ivec2 qi = (clamp(ivec2(round(q)), ivec2(0), hi) >> 1) << 1;
+            if (qi == xy) continue;
+            float nz = depth_at(qi);
+            weight += 1.0;
+            if (nz > 5000.0) continue;   // sky: open
+            vec3 v = view_position(vec2(qi), nz) - c;
+            float dist = length(v);
+            float falloff = 1.0 - smoothstep(0.5 * world, world, dist);
+            // Height above the plane, less a small margin for depth precision: a grazing surface stored in steps
+            // otherwise occludes itself in thin lines along the steps (cheeks seen from the side).
+            float cosang = (dot(n, v) - 0.004 * center) / max(dist, 1e-6);
+            if (ao_level > 0.5) occlusion += max(cosang - 0.35, 0.0) / 0.65 * falloff;
+            if (gi_level > 0.5 && falloff > 0.0 && cosang > 0.0) {
+                vec3 neighbor = texelFetch(scene_color, qi, 0).rgb;
+                bounce += max(neighbor - color.rgb, vec3(0.0)) * falloff * cosang;
+                bounce_w += 1.0;
+            }
+        }
+    }
+    occlusion = weight > 0.0 ? occlusion / weight : 0.0;
+    float strength = ao_level == 1.0 ? 0.6 : ao_level == 2.0 ? 0.9 : 1.2;
+    float ao = ao_level > 0.5 ? 1.0 - min(occlusion * strength, 0.5) : 1.0;
+    float gi = gi_level == 1.0 ? 0.10 : gi_level == 2.0 ? 0.20 : 0.32;
+    imageStore(result_half, hxy, vec4((bounce_w > 0.0 ? bounce / bounce_w : vec3(0.0)) * gi, ao));
+}

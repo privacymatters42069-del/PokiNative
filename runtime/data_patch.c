@@ -68,6 +68,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -619,6 +620,10 @@ void data_patch_init(void) {
     // launcher has the settings now (F1 / Esc open the Controls page, ui/menu.cpp)
     const char *ui = cfg_get("TOTK_UI_PATCH");
     int uis = ui && *ui && strcmp(ui, "0");
+    if (uis && rt_mod_pack()) {   // a mod pack brings message/ and xmenu as loose files our text patch does not reach
+        rt_log("data patch: TOTK_UI_PATCH off for mod pack %s", rt_mod_pack());
+        uis = 0;
+    }
     const char *level = cfg_value("TOTK_POPULATION");
     int wild = !strcmp(level, "switch2") ? 40 : !strcmp(level, "enhanced") ? 80 : !strcmp(level, "extreme") ? 120 : 0;
     if (wild) {

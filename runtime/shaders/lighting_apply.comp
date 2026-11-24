@@ -1,0 +1,54 @@
+// TOTK_LIGHTING_HALF: applies lighting_half.comp's quarter-size result to the full frame. Each pixel blends the 4x4
+// nearest half-size samples by distance and by how close their depth is to its own, so occlusion does not bleed
+// across silhouettes; when none of them lies on its surface it keeps the nearest one.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D scene_depth;
+layout(set = 0, binding = 1) uniform sampler2D scene_color;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D result_color;
+layout(set = 0, binding = 3) uniform sampler2D half_light;
+layout(set = 0, binding = 4) uniform sampler2D half_depth;   // view distance at every 2nd pixel
+layout(push_constant) uniform P {
+    vec4 projection; // p22, p23, p32, clip depth -w..w
+    vec4 controls;   // width, height, AO level, indirect-light level
+    vec4 camera;     // 1 / p00, 1 / p11, frame number, unused
+} p;
+
+float view_distance(float depth) {
+    float ndc = p.projection.w > 0.5 ? depth * 2.0 - 1.0 : depth;
+    float divisor = ndc * p.projection.z - p.projection.x;
+    return abs(divisor) > 1e-6 ? abs(p.projection.y / divisor) : 1e8;
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(p.controls.xy);
+    if (any(greaterThanEqual(xy, size))) return;
+    vec4 color = texelFetch(scene_color, xy, 0);
+    float center = view_distance(texelFetch(scene_depth, xy, 0).r);
+    if (center > 5000.0 || center < 0.01) { imageStore(result_color, xy, color); return; }
+    ivec2 hsize = (size + 1) / 2, hhi = hsize - 1;
+    vec2 f = vec2(xy) * 0.5;
+    ivec2 h0 = ivec2(floor(f));
+    vec2 t = f - vec2(h0);
+    vec4 sum = vec4(0.0);
+    float wsum = 0.0, best = 1e30;
+    vec4 nearest = vec4(0.0, 0.0, 0.0, 1.0);
+    // 4x4 half-size samples around the pixel: a small Gaussian also averages the half-size noise pattern, which the
+    // temporal anti-aliasing cannot (it repeats over 2x2 pixels).
+    for (int j = -1; j < 3; ++j)
+        for (int i = -1; i < 3; ++i) {
+            ivec2 h = clamp(h0 + ivec2(i, j), ivec2(0), hhi);
+            float z = texelFetch(half_depth, h, 0).r;
+            float rel = abs(z - center) / center;
+            vec2 d = vec2(i, j) - t;
+            float g = exp(-dot(d, d) * 0.5);
+            vec4 v = texelFetch(half_light, h, 0);
+            float w = g * exp(-rel * 50.0);
+            sum += v * w, wsum += w;
+            if (rel < best) best = rel, nearest = v;
+        }
+    vec4 light = wsum > 1e-4 ? sum / wsum : nearest;
+    color.rgb = clamp(color.rgb * light.a + light.rgb, 0.0, 1.0);
+    imageStore(result_color, xy, color);
+}

@@ -851,7 +851,14 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. A write starts
 //   blocking CPU copies after its command buffer is submitted, so read-modify-write commands get fresh inputs.
 // TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux.
-typedef struct { uint64_t lo, hi; } SRange;
+// KarPur TOTK_SHADOW_MERGE (default 1; issues #16, #23, #24, #26): a GPU write is noted as the whole bound range (a
+// 256 KiB storage block, say), but the shader writes only some of its words, and the game keeps writing the others
+// while the GPU runs. Copying the whole range back at the fence put the range's bytes from before the submit over
+// those writes, and since the sync skipped the range while it was pending, the shadow lacked them too: state the game
+// wrote once stayed lost until it wrote it again. So each range's shadow bytes are kept at the submit (base); at the
+// fence only the words the GPU changed go to guest memory, and the words the CPU changed meanwhile go to the shadow.
+// =0: the whole range is copied back as before.
+typedef struct { uint64_t lo, hi, seq; uint8_t *base; } SRange;
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
@@ -860,6 +867,9 @@ static int nspend, cspend, nspend_submitted;       // the submitted ranges form 
 static int shadow_writeback;                      // this submission needs a host-read barrier, even after a split
 static int64_t s_live_n, s_live_bytes;            // shadow_lock
 static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
+static int s_merge = -1;                          // TOTK_SHADOW_MERGE, read at the first sync
+static uint64_t s_seq;                            // shadow_lock: submits synced
+static uint64_t s_kept, s_conflict, s_merged, s_nobase;   // shadow_lock, since the last log
 
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~0xfffull;
@@ -966,6 +976,13 @@ static void shadow_sync_pool(PoolRec *r) {
 void vk_mem_shadow_sync(void) {
     if (!shadow_on) return;
     uint64_t t0 = qpc();
+    if (s_merge < 0) {
+        s_merge = rt_knob("SHADOW_MERGE", "1") != 0;
+        rt_log("mem: shadow write-back: %s (TOTK_SHADOW_MERGE)",
+               s_merge ? "only the words the GPU changed; CPU writes made while it ran are kept"
+                       : "whole ranges, over CPU writes made while the GPU ran");
+    }
+    if (s_merge) plat_mutex_lock_shared(&pool_lock);   // before shadow_lock: the bases are read from the shadows
     plat_mutex_lock(&shadow_lock);
     if (nstouch) {
         plat_mutex_lock(&gen_lock);
@@ -974,9 +991,21 @@ void vk_mem_shadow_sync(void) {
         s_syncs += (uint64_t)nstouch;
         nstouch = 0;
     }
+    // KarPur TOTK_SHADOW_MERGE: the shadow bytes of the ranges this submit writes, which its GPU work starts from
+    s_seq++;
+    for (int i = nspend_submitted; i < nspend; i++) {
+        SRange *w = &spend[i];
+        w->seq = s_seq, w->base = NULL;
+        if (!s_merge) continue;
+        const pidx_ent *e = pidx_find(&pool_index, w->lo, w->hi - w->lo);
+        PoolRec *r = e ? e->buf : NULL;
+        if (!r || !r->smap || w->lo < r->import_lo || w->hi > r->import_hi) continue;
+        if ((w->base = malloc(w->hi - w->lo))) memcpy(w->base, r->smap + (w->lo - r->import_lo), w->hi - w->lo);
+    }
     nspend_submitted = nspend;
     s_ticks += qpc() - t0;
     plat_mutex_unlock(&shadow_lock);
+    if (s_merge) plat_mutex_unlock_shared(&pool_lock);
 }
 
 int vk_mem_shadow_end(VkCommandBuffer cb) {
@@ -1008,23 +1037,50 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// KarPur TOTK_SHADOW_MERGE, shadow_lock held: the words of guest g the GPU changed in shadow s since base b go to
+// guest memory, the words the CPU changed since b go to the shadow. 4-byte words, as shaders write them; a word both
+// changed takes the GPU's.
+static void shadow_merge(uint8_t *g, uint8_t *s, const uint8_t *b, uint64_t n) {
+    uint64_t kept = 0, conflict = 0, i = 0;
+    for (; i + 64 <= n; i += 64) {
+        int gpu = memcmp(s + i, b + i, 64) != 0, cpu = memcmp(g + i, b + i, 64) != 0;
+        if (!gpu && !cpu) continue;
+        if (!cpu) { memcpy(g + i, s + i, 64); continue; }
+        for (uint64_t k = i; k < i + 64; k += 4) {
+            uint32_t gw, sw, bw;
+            memcpy(&gw, g + k, 4), memcpy(&sw, s + k, 4), memcpy(&bw, b + k, 4);
+            if (sw != bw) conflict += gw != bw, memcpy(g + k, &sw, 4);
+            else if (gw != bw) kept++, memcpy(s + k, &gw, 4);
+        }
+    }
+    for (; i < n; i++) {
+        if (s[i] != b[i]) g[i] = s[i];
+        else if (g[i] != b[i]) s[i] = g[i], kept++;
+    }
+    s_kept += kept, s_conflict += conflict;
+}
+
 void vk_gpu_written(uint64_t addr, uint64_t size) {
     if (shadow_on && size) {
         plat_mutex_lock_shared(&pool_lock);
         const pidx_ent *e = pidx_find(&pool_index, addr, size);
         PoolRec *r = e ? e->buf : NULL;
         plat_mutex_lock(&shadow_lock);
+        int w = -1;   // the oldest submitted write of this range is this fence's
+        for (int i = 0; i < nspend_submitted; i++)
+            if (spend[i].lo == addr && spend[i].hi == addr + size && (w < 0 || spend[i].seq < spend[w].seq)) w = i;
+        uint8_t *base = w >= 0 ? spend[w].base : NULL;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
             mem_thaw(addr, size);
-            memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+            if (base) shadow_merge((uint8_t *)(uintptr_t)addr, r->smap + (addr - r->import_lo), base, size), s_merged++;
+            else memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size), s_nobase += s_merge > 0;
             s_wb_bytes += size;
         }
-        for (int i = 0; i < nspend_submitted; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) {
-                spend[i] = spend[--nspend_submitted];
-                spend[nspend_submitted] = spend[--nspend];
-                break;
-            }
+        free(base);
+        if (w >= 0) {
+            spend[w] = spend[--nspend_submitted];
+            spend[nspend_submitted] = spend[--nspend];
+        }
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1039,7 +1095,12 @@ static void shadow_log(uint64_t frame) {
            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend);
+    if (s_merge > 0)   // KarPur TOTK_SHADOW_MERGE: kept = words of CPU writes made while the GPU ran (a whole copy lost them)
+        rt_log("mem: shadow merge: %llu ranges merged (%llu copied whole), %llu words the CPU wrote while the GPU ran "
+               "kept, %llu written by both (the GPU's taken)", (unsigned long long)s_merged,
+               (unsigned long long)s_nobase, (unsigned long long)s_kept, (unsigned long long)s_conflict);
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
+    s_kept = s_conflict = s_merged = s_nobase = 0;
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -2763,6 +2824,7 @@ void vk_mem_shutdown(void) {
     pool_index.n = 0;
     nm = npend = nwbl = 0;   // mirrors went with their pools
     plat_mutex_lock(&shadow_lock);
+    for (int i = 0; i < nspend; i++) free(spend[i].base), spend[i].base = NULL;
     nstouch = nspend = nspend_submitted = shadow_writeback = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);

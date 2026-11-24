@@ -16,6 +16,7 @@
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
+#include "layout.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -63,19 +64,39 @@ static void cb_loader_ready(Cpu *c) {
 
 // DT_INIT registers the module with musl (__nnmusl_init_dso) and runs its init_array; the constructor flag reads 2
 // afterwards (MacNativeGames loader.c:458-462).
+// KarPur: an exefs plugin of a mod (loader.c) is a subsdk too: its DT_INIT runs after subsdk0's and before sdk's. It
+// has no musl constructor flag (exlaunch's own start-up), so only its return is logged; plugin_init_done (plugin.c)
+// then takes the code it wrote while it ran.
 static void cb_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
-    for (unsigned k = 0; k < sizeof init_order / sizeof *init_order; k++) {
-        const RtLoaded *m = module_named(init_order[k]);
+    enum { NGAME = sizeof init_order / sizeof *init_order };
+    const RtLoaded *order[MOD_COUNT + 1];
+    int n = 0;
+    for (unsigned k = 0; k + 1 < NGAME; k++) order[n++] = module_named(init_order[k]);
+    for (int i = 0; i < ldr_count(); i++) {
+        int game = 0;
+        for (unsigned k = 0; k < NGAME; k++) game |= !strcmp(ldr_module(i)->name, init_order[k]);
+        if (!game && n < MOD_COUNT) order[n++] = ldr_module(i);
+    }
+    order[n++] = module_named(init_order[NGAME - 1]);
+    for (int k = 0; k < n; k++) {
+        const RtLoaded *m = order[k];
         uint64_t entries = m->init_array_size / 8;
         if (!m->init) rt_fatal("boot: %s has no DT_INIT", m->name);
         rt_log("boot: ENTER %s DT_INIT (%llu init_array entries)", m->name, (unsigned long long)entries);
         rt_call(c, m->init, 0);
+        if (!m->ctor_flag) {
+            rt_logf("boot: DT_INIT %s returned (exefs plugin, %llu init_array entries)\n", m->name,
+                    (unsigned long long)entries);
+            plugin_init_done(m);
+            continue;
+        }
         uint32_t state = ctor_state(m);
         rt_logf("boot: DT_INIT %s state=%u (%llu)\n", m->name, state, (unsigned long long)entries);
         if (state != CTOR_DONE) rt_fatal("boot: %s DT_INIT left its constructor flag at %u, not 2", m->name, state);
     }
     plat_xchg32(&inits_done, 1);
+    plugin_inits_done();
 }
 
 static void cb_module_finis(Cpu *c) {
@@ -96,7 +117,7 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
     if (!strcmp(what, "checkpoint")) {
         if (!plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: checkpoint %s before DT_INIT", detail);
         for (int i = 0; i < ldr_count(); i++)
-            if (ctor_state(ldr_module(i)) != CTOR_DONE)
+            if (ldr_module(i)->ctor_flag && ctor_state(ldr_module(i)) != CTOR_DONE)
                 rt_fatal("boot: checkpoint %s: %s constructor flag reads %u", detail, ldr_module(i)->name,
                          ctor_state(ldr_module(i)));
         plat_xchg32(&checkpoint_seen, 1);

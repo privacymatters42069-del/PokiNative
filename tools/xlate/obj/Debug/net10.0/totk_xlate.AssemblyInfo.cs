@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("totk_xlate")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3dbe24be1749497f1a120a200dbe2b8dd971b880")]
 [assembly: System.Reflection.AssemblyProductAttribute("totk_xlate")]
 [assembly: System.Reflection.AssemblyTitleAttribute("totk_xlate")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

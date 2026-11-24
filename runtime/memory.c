@@ -55,6 +55,17 @@ typedef struct { uint64_t dst, src, size; } StackMap;
 static StackMap stack_maps[MAX_STACK_MAPS];
 static unsigned nstack_maps;
 static uint8_t *module_perm[MOD_COUNT];   // per data page of each module: perm | ATTR_PERMISSION_LOCKED
+// KarPur: regions QueryMemory reports before anything else (exefs plugins, plugin.c): the image of rtld, which the
+// host never runs but an exlaunch plugin expects to find before main, and process-memory maps (svc 0x74).
+#define MAX_EXTRA 64
+typedef struct { uint64_t base, size; uint32_t state, perm; } Extra;
+static Extra extras[MAX_EXTRA];
+static unsigned nextras;
+static int module_window_gaps;   // 1: gaps between modules read Inaccessible, not Code (mem_extra_add)
+// KarPur: with exefs plugins in the build, a large guest-owned block that reads Free once a plugin loaded. exlaunch
+// maps its aliases at random addresses of the ASLR region and gives up after a few that are not free; most of that
+// region is the host's here, so without this block its start-up failed now and then.
+static RtRange plug;
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
@@ -301,6 +312,10 @@ void mem_init(void) {
     for (uint64_t at = align_up(low + LOW_SIZE, ALIAS_ALIGN); at + ALIAS_SIZE <= mods_lo && !alias; at += ALIAS_ALIGN)
         if (reserve_at(at, ALIAS_SIZE, 1)) alias = at;
     if (!alias) reexec_or_fail("a 64 GiB alias region below 2^39");
+    if (rt_plugin_count)
+        for (uint64_t sz = 256 * GiB; sz >= 16 * GiB && !plug.size; sz /= 2)
+            for (uint64_t at = align_up(alias + ALIAS_SIZE, GiB); at + sz + GiB <= mods_lo && !plug.size; at += GiB)
+                if (reserve_at(at, sz, 0)) plug = (RtRange){at, sz};
 
     plat_mem_fault_hook(thaw_fault);   // before the crash handler
     alias_pages = calloc(ALIAS_PAGES, 1);
@@ -573,13 +588,16 @@ uint32_t mem_unmap_physical(uint64_t a, uint64_t n) { return alias_map(1, a, n);
 // as taken (Code, RX), so the SDK never picks it.
 static void taken_gap(uint64_t a, uint64_t *base, uint64_t *size) {
     uint64_t lo = 0, hi = RT_ADDRESS_LIMIT;
-    RtRange known[3 + MOD_COUNT + 2];
+    RtRange known[3 + MOD_COUNT + 2 + MAX_EXTRA];
     int n = 0;
     known[n++] = (RtRange){L.aslr.base, LOW_SIZE};
     known[n++] = L.alias;
     known[n++] = L.kernel;
     known[n++] = L.hostfn;
+    if (module_window_gaps && plug.size) known[n++] = plug;
     for (int i = 0; i < ldr_count(); i++) known[n++] = (RtRange){ldr_module(i)->base, ldr_module(i)->size};
+    for (unsigned i = 0; i < nextras && n < (int)(sizeof known / sizeof *known); i++)
+        known[n++] = (RtRange){extras[i].base, extras[i].size};
     for (int i = 0; i < n; i++) {
         uint64_t e = known[i].base + known[i].size;
         if (e <= a && e > lo) lo = e;
@@ -610,6 +628,15 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
     uint64_t low = L.aslr.base;
     plat_mutex_lock_shared(&lock);
     int mi;
+    const Extra *x = NULL;
+    for (unsigned i = 0; i < nextras && !x; i++)
+        if (a - extras[i].base < extras[i].size) x = &extras[i];
+    if (x) {
+        r = (RtMemoryInfo){.base = x->base, .size = x->size, .state = x->state, .perm = x->perm};
+        plat_mutex_unlock_shared(&lock);
+        if (out) *out = r;
+        return R_OK;
+    }
     if (a >= RT_ADDRESS_LIMIT) {
         r.base = RT_ADDRESS_LIMIT;
         r.size = 0 - RT_ADDRESS_LIMIT;
@@ -647,10 +674,18 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         r = (RtMemoryInfo){.base = L.kernel.base, .size = L.kernel.size, .state = ST_THREADLOCAL, .perm = PERM_RW};
     } else if (a - L.hostfn.base < L.hostfn.size) {
         r = (RtMemoryInfo){.base = L.hostfn.base, .size = L.hostfn.size, .state = ST_INACCESSIBLE};
+    } else if (module_window_gaps && a - plug.base < plug.size) {
+        r = (RtMemoryInfo){.base = plug.base, .size = plug.size, .state = ST_FREE};
     } else {
         taken_gap(a, &r.base, &r.size);
         r.state = ST_CODE;
         r.perm = PERM_RX;
+        // With an exefs plugin, a taken gap is not code: exlaunch finds modules by walking QueryMemory from 0 and
+        // counts every Code RX block as one, so a Code RX gap shifts its module index (main must be the second).
+        if (module_window_gaps) {
+            r.state = ST_INACCESSIBLE;
+            r.perm = PERM_NONE;
+        }
     }
     // Moved stacks: the destination is Stack, the source Normal without access; free and normal regions around them
     // are clipped (MNG services.c).
@@ -669,6 +704,14 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         uint64_t b = r.state == ST_FREE ? m->dst : r.state == ST_NORMAL ? m->src : 0;
         uint64_t e = b + m->size;
         if (!b) continue;
+        if (e <= a && e > lo) lo = e;
+        if (b > a && b < hi) hi = b;
+        r.base = lo;
+        r.size = hi - lo;
+    }
+    // KarPur: extra regions (an exefs plugin's aliases, rtld's image) are their own blocks: clip the one around them.
+    for (unsigned i = 0; i < nextras; i++) {
+        uint64_t lo = r.base, hi = r.base + r.size, b = extras[i].base, e = b + extras[i].size;
         if (e <= a && e > lo) lo = e;
         if (b > a && b < hi) hi = b;
         r.base = lo;
@@ -818,4 +861,61 @@ void mem_kernel_free(void *p, uint64_t size) {
     f->next = kfree_list[k];
     kfree_list[k] = f;
     plat_mutex_unlock(&klock);
+}
+
+// ---- KarPur: regions of exefs plugins (plugin.c)
+// Reports [base, base+size) as state/perm in QueryMemory; turns on the module-window gap rule above. 0 when full.
+int mem_extra_add(uint64_t base, uint64_t size, uint32_t state, uint32_t perm) {
+    plat_mutex_lock(&lock);
+    int ok = nextras < MAX_EXTRA;
+    if (ok) extras[nextras++] = (Extra){base, size, state, perm};
+    module_window_gaps = 1;
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
+void mem_extra_remove(uint64_t base) {
+    plat_mutex_lock(&lock);
+    for (unsigned i = 0; i < nextras; i++)
+        if (extras[i].base == base) {
+            extras[i] = extras[--nextras];
+            break;
+        }
+    plat_mutex_unlock(&lock);
+}
+
+// Commits [a, a+n) read-write where the guest may map memory of its own choosing: free pages of the stack and heap
+// block (outside the heap, moved stacks and other extra regions) or of the alias region. 1 on success.
+int mem_commit_free(uint64_t a, uint64_t n) {
+    if ((a | n) & (PAGE - 1) || !n) return 0;
+    RtMemoryInfo r;
+    mem_query(a, &r);
+    if (r.state != ST_FREE || a + n > r.base + r.size) return 0;
+    // the stack region counts (free pages there are free on hardware too): only moved stacks and extras are taken
+    int in_low = inside(a, n, (RtRange){L.aslr.base, LOW_SIZE}) && !overlaps(a, n, L.heap.base, L.heap.size);
+    plat_mutex_lock_shared(&lock);
+    for (unsigned i = 0; i < nstack_maps && in_low; i++)
+        if (overlaps(a, n, stack_maps[i].dst, stack_maps[i].size)) in_low = 0;
+    for (unsigned i = 0; i < nextras; i++)
+        if (overlaps(a, n, extras[i].base, extras[i].size)) in_low = 0;
+    plat_mutex_unlock_shared(&lock);
+    int in_alias = inside(a, n, L.alias);
+    int in_plug = module_window_gaps && inside(a, n, plug);
+    if (!in_low && !in_alias && !in_plug) return 0;
+    commit(a, n, "process memory map");
+    if (in_alias) {   // taken, so the game's MapPhysicalMemory does not hand these pages out again
+        plat_mutex_lock(&lock);
+        memset(alias_pages + (a - L.alias.base) / PAGE, 1, n / PAGE);
+        plat_mutex_unlock(&lock);
+    }
+    return 1;
+}
+
+void mem_decommit_free(uint64_t a, uint64_t n) {
+    decommit(a, n, "process memory map");
+    if (inside(a, n, L.alias)) {
+        plat_mutex_lock(&lock);
+        memset(alias_pages + (a - L.alias.base) / PAGE, 0, n / PAGE);
+        plat_mutex_unlock(&lock);
+    }
 }

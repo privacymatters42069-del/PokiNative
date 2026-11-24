@@ -8,9 +8,10 @@ namespace KarPurLinux;
 
 static class Program
 {
-    public const string Version = "0.4.6.1";
-    // The internal revision also replaces earlier Deck test launchers when pinning the AppImage.
-    public const string BuildRevision = "0.4.6.1";
+    static readonly System.Version AssemblyVersion =
+        typeof(Program).Assembly.GetName().Version ?? new System.Version(0, 1, 0, 0);
+    public static string Version => AssemblyVersion.ToString();
+    public static string BuildRevision => Version;
     [STAThread]
     public static int Main(string[] args)
     {

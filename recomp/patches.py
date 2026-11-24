@@ -27,6 +27,17 @@ words must not branch except a final `bl` (lifted with the site's return address
 other than `bl`. So the function's control flow, labels and jump tables are the original's. The generator writes
 patches.h (set names, switches, the page address) next to layout.h for the runtime.
 
+Exefs plugins (recomp/plugins.py, tools/plugin_hooks.py) add, in their own table loaded after the base one:
+
+  site <set> <module> <address> <original> <word> ... @jump:<module>+<hex offset>   (or a final @ret)
+  entry <module> <address>                   an extra function start (an address a plugin jumps back to)
+  code <module> <address> <original> <word>  a word lifted in place of the module's, with no switch: code a plugin
+                                             writes into its own image at start-up (its hook trampolines)
+
+A final `@jump:` replacement is a tail jump to that module address, `@ret` a return: a plugin's hook ends its
+alternative that way. Several tables may patch the same site with different sets; the generated C then tries the sets
+in the reverse order of their tables (a plugin's before the base table's), then the original.
+
 A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <head> that only another thread can end,
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
 <head>) is lifted as `rt_spin_gate(c, <head>); goto <head>`, which keeps every register and only adds time
@@ -57,96 +68,155 @@ def bl(pc, target):
 
 
 def resolve(a, page, w):
-    """Replacement word w for the site at a: a plain word, ('page', reg) or ('pagebl', offset)."""
+    """Replacement word w for the site at a: a plain word, ('page', reg), ('pagebl', offset), or a final
+    ('jump', absolute target) / ('ret',), which stay tuples for the generator."""
     if not isinstance(w, tuple):
+        return w
+    if w[0] in ('jump', 'ret'):
         return w
     return adrp(a, page, w[1]) if w[0] == 'page' else bl(a, page + w[1])
 
 
 class Table:
-    """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg)], original)}}; page."""
+    """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg) | ...], original)]}}
+    with the alternatives in the order the generated C tries them; page; spins; entries {module: {offset}};
+    code {module: {offset: (original, word)}}."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, entries=None, code=None):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
+        self.entries = entries or {}
+        self.code = code or {}
 
     def spins_for(self, name, base):
         """{absolute back-edge address: absolute head address}."""
         return {base + b: base + h for b, h in self.spins.get(name, {}).items()}
 
     def for_module(self, name, base):
-        """{absolute address: (set index, [words])} with @page resolved."""
+        """{absolute address: [(set index, [words])]} with @page resolved."""
         out = {}
-        for off, (k, repl, _) in self.sites.get(name, {}).items():
+        for off, alts in self.sites.get(name, {}).items():
             a = base + off
-            out[a] = (k, [resolve(a, self.page, w) for w in repl])
+            out[a] = [(k, [resolve(a, self.page, w) for w in repl]) for k, repl, _ in alts]
         return out
 
+    def entries_for(self, name, base):
+        return sorted(base + o for o in self.entries.get(name, ()))
 
-def load(path, mods):
-    """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins = [], {}, {}, {}
+    def code_for(self, name):
+        """{module offset: word} to lift in place of the module's words."""
+        return {o: w for o, (_, w) in self.code.get(name, {}).items()}
+
+
+def _target(where, w, bases):
+    mod, _, off = w.partition('+')
+    if mod not in bases or not off:
+        raise PatchError(f'{where}: {w!r} does not name <module>+<offset> of the layout')
+    return bases[mod][0] + int(off, 16)
+
+
+def load(paths, mods):
+    """Table from one patch file or a list of them (later files' sites are tried first); mods is layout() output
+    [(name, base, size)]."""
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
+    sets, index, sites, spins, entries, code = [], {}, {}, {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
-    for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
-        f = raw.split('#', 1)[0].split()
-        if not f:
-            continue
-        where = f'{path}:{no}'
-        if f[0] == 'set' and len(f) == 4:
-            if f[1] in index:
-                raise PatchError(f'{where}: set {f[1]} defined twice')
-            index[f[1]] = len(sets)
-            sets.append((f[1], f[2], int(f[3])))
-        elif f[0] == 'site' and len(f) >= 6:
-            if f[1] not in index:
-                raise PatchError(f'{where}: unknown set {f[1]}')
-            if f[2] not in bases:
-                raise PatchError(f'{where}: module {f[2]} not in the layout')
-            off, orig = int(f[3], 16), int(f[4], 16)
-            repl = []
-            for j, w in enumerate(f[5:], 5):
-                if w.startswith('@page:x'):
-                    repl.append(('page', int(w[7:])))
-                elif w.startswith('@pagebl:'):
-                    if j != len(f) - 1:
-                        raise PatchError(f'{where}: @pagebl must be the last replacement word')
-                    repl.append(('pagebl', int(w[8:], 16)))
-                else:
-                    repl.append(int(w, 16))
-            mod = sites.setdefault(f[2], {})
-            if off in mod:
-                raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice')
-            mod[off] = (index[f[1]], repl, orig)
-        elif f[0] == 'spin' and len(f) >= 4:
-            if f[1] not in bases:
-                raise PatchError(f'{where}: module {f[1]} not in the layout')
-            mod, head = spins.setdefault(f[1], {}), int(f[2], 16)
-            for b in f[3:]:
-                b = int(b, 16)
-                if b in mod:
-                    raise PatchError(f'{where}: {f[1]}+{b:#x} is a back-edge twice')
-                mod[b] = head
-        else:
-            raise PatchError(f'{where}: cannot parse {raw!r}')
+    for path in paths:
+        own = set()   # sites of this file: one file patches an address once
+        for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
+            f = raw.split('#', 1)[0].split()
+            if not f:
+                continue
+            where = f'{path}:{no}'
+            if f[0] == 'set' and len(f) == 4:
+                if f[1] in index:
+                    raise PatchError(f'{where}: set {f[1]} defined twice')
+                index[f[1]] = len(sets)
+                sets.append((f[1], f[2], int(f[3])))
+            elif f[0] == 'site' and len(f) >= 6:
+                if f[1] not in index:
+                    raise PatchError(f'{where}: unknown set {f[1]}')
+                if f[2] not in bases:
+                    raise PatchError(f'{where}: module {f[2]} not in the layout')
+                off, orig = int(f[3], 16), int(f[4], 16)
+                repl = []
+                for j, w in enumerate(f[5:], 5):
+                    final = j == len(f) - 1
+                    if w.startswith('@page:x'):
+                        repl.append(('page', int(w[7:])))
+                    elif w.startswith('@pagebl:'):
+                        if not final:
+                            raise PatchError(f'{where}: @pagebl must be the last replacement word')
+                        repl.append(('pagebl', int(w[8:], 16)))
+                    elif w.startswith('@jump:'):
+                        if not final:
+                            raise PatchError(f'{where}: @jump must be the last replacement word')
+                        repl.append(('jump', _target(where, w[6:], bases)))
+                    elif w == '@ret':
+                        if not final:
+                            raise PatchError(f'{where}: @ret must be the last replacement word')
+                        repl.append(('ret',))
+                    else:
+                        repl.append(int(w, 16))
+                if (f[2], off) in own:
+                    raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice')
+                own.add((f[2], off))
+                alts = sites.setdefault(f[2], {}).setdefault(off, [])
+                if any(a[2] != orig for a in alts):
+                    raise PatchError(f'{where}: {f[2]}+{off:#x} has another original word in an earlier table')
+                alts.insert(0, (index[f[1]], repl, orig))
+            elif f[0] == 'spin' and len(f) >= 4:
+                if f[1] not in bases:
+                    raise PatchError(f'{where}: module {f[1]} not in the layout')
+                mod, head = spins.setdefault(f[1], {}), int(f[2], 16)
+                for b in f[3:]:
+                    b = int(b, 16)
+                    if b in mod:
+                        raise PatchError(f'{where}: {f[1]}+{b:#x} is a back-edge twice')
+                    mod[b] = head
+            elif f[0] == 'entry' and len(f) == 3:
+                if f[1] not in bases:
+                    raise PatchError(f'{where}: module {f[1]} not in the layout')
+                entries.setdefault(f[1], set()).add(int(f[2], 16))
+            elif f[0] == 'code' and len(f) == 5:
+                if f[1] not in bases:
+                    raise PatchError(f'{where}: module {f[1]} not in the layout')
+                mod, off = code.setdefault(f[1], {}), int(f[2], 16)
+                if off in mod:
+                    raise PatchError(f'{where}: {f[1]}+{off:#x} has two code words')
+                mod[off] = (int(f[3], 16), int(f[4], 16))
+            else:
+                raise PatchError(f'{where}: cannot parse {raw!r}')
+    for name, offs in code.items():
+        clash = set(offs) & set(sites.get(name, {}))
+        if clash:
+            raise PatchError(f'{name}+{min(clash):#x}: both a code word and a patch site')
     base, size = bases['main'][0], bases['main'][1]
     page = (base + size + PAGE - 1) & ~(PAGE - 1)
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins)
+    return Table(sets, sites, page, spins, entries, code)
 
 
 def check(table, mod, name):
-    """Stops on a site whose original word differs from the module's."""
-    for off, (_, _, want) in table.sites.get(name, {}).items():
+    """Stops on a site (or code word) whose original word differs from the module's file. mod must be the module
+    without its code words applied (module.Module with code=None)."""
+    want_at = {off: alts[0][2] for off, alts in table.sites.get(name, {}).items()}
+    want_at.update({off: orig for off, (orig, _) in table.code.get(name, {}).items()})
+    for off, want in want_at.items():
         a = mod.base + off
         if not mod.in_text(a):
             raise PatchError(f'{name}+{off:#x}: patch site outside .text')
         have = mod.word(a)
         if have != want:
             raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
+    for off in table.entries.get(name, ()):
+        if not mod.in_text(mod.base + off):
+            raise PatchError(f'{name}+{off:#x}: entry outside .text')
     for b, head in table.spins.get(name, {}).items():
         a = mod.base + b
         if not mod.in_text(a) or branch_target(mod.word(a), a) != mod.base + head:

@@ -96,6 +96,7 @@ static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
 static VkExtent2D g_sc_ext;
+static int g_sc_cw, g_sc_ch;                  // the client size the swapchain was built for
 static int g_scaler;                        // the last present: 0 the game image 1:1, 1 scaled by the blit, 2 by FSR
 static uint32_t g_sc_n;
 static VkImage g_sc_img[MAX_IMAGES];
@@ -282,20 +283,24 @@ static void free_capture(void) {
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
 static int create_swapchain(void) {
     flip_locked();   // the acquired image goes out before its swapchain is replaced
+    // Clear the flag before reading the size: a WM_SIZE that lands during the rebuild sets it again and gets its own
+    // rebuild. Clearing it at the end dropped that resize (F11 back to fullscreen kept the windowed 1920x1080 swapchain
+    // in the top-left quarter of a 4K screen, 2026-11-22)
+    plat_xchg32(&g_dirty, 0);
     VkCtx *c = vk_ctx();
     VkSurfaceCapabilitiesKHR caps;
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(c->phys, g_surface, &caps) != VK_SUCCESS) return 0;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(c->phys, g_surface, &caps) != VK_SUCCESS) goto fail;
     int cw = 0, ch = 0;
     wsys_client_size(&cw, &ch);
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent
                                                             : (VkExtent2D){(uint32_t)cw, (uint32_t)ch};
-    if (!ext.width || !ext.height) return 0;
+    if (!ext.width || !ext.height) goto fail;
     uint32_t nf = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, NULL);
     VkSurfaceFormatKHR fmts[64];
     if (nf > 64) nf = 64;
     vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, fmts);
-    if (!nf) return 0;
+    if (!nf) goto fail;
     // UNORM: the blit writes the bytes the game wrote (no sRGB encode).
     VkSurfaceFormatKHR sf = fmts[0];
     int found = 0;
@@ -323,7 +328,7 @@ static int create_swapchain(void) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
         g_sc = old;
         vk_queue_unlock();
-        return 0;
+        goto fail;
     }
     for (uint32_t i = 0; i < g_sc_n; i++) {
         vkDestroySemaphore(c->device, g_render_done[i], NULL);
@@ -331,8 +336,11 @@ static int create_swapchain(void) {
         g_sc_view[i] = VK_NULL_HANDLE;
     }
     if (old) slfg_vkDestroySwapchainKHR(c->device, old, NULL);
+    if (g_sc_ext.width && (g_sc_ext.width != ext.width || g_sc_ext.height != ext.height))
+        rt_log("gfx: swapchain %ux%u -> %ux%u (window %dx%d)", g_sc_ext.width, g_sc_ext.height, ext.width, ext.height, cw, ch);
     g_sc_fmt = sf.format;
     g_sc_ext = ext;
+    g_sc_cw = cw, g_sc_ch = ch;
     // The count first, then exactly that many: Streamline's DLSS-G (vk_slfg.cpp) clones as many images as the second
     // call asks for, and a single call with room for MAX_IMAGES made it clone 8 of a 6-image swapchain - the driver
     // faulted on the two that do not exist (2026-11-08)
@@ -350,8 +358,10 @@ static int create_swapchain(void) {
     }
     free_capture();
     vk_queue_unlock();
-    plat_xchg32(&g_dirty, 0);
     return 1;
+fail:
+    plat_xchg32(&g_dirty, 1);
+    return 0;
 }
 
 static void sync_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 s0,
@@ -542,6 +552,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     flip_locked();
+    {   // backstop for a lost WM_SIZE: the client area changed since the swapchain was built
+        int cw = 0, ch = 0;
+        wsys_client_size(&cw, &ch);
+        if (g_sc && cw > 0 && ch > 0 && (cw != g_sc_cw || ch != g_sc_ch)) plat_xchg32(&g_dirty, 1);
+    }
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }

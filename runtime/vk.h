@@ -410,7 +410,7 @@ void rdoc_init(void);                     // runtime/rdoc.c: TOTK_RDOC debug cap
 int rdoc_active(void);
 void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
-int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 0): submissions replay on the replay thread
+int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 1): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);
 int vk_pipeline_vs_writes_layer(const GfxShader *vs);   // KarPur: vk_pipeline.c, the vertex shader writes gl_Layer  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order

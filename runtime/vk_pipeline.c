@@ -915,14 +915,119 @@ static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShader
     st->pNext = rq;
 }
 
+// KarPur: shadow filter width (TOTK_SHADOW_SOFT). Violet filters its sun shadow itself: 16 point reads of the 2D-array
+// cascade map per material shader, each tap's x and y = Fma(radius / map size, disc offset from a uniform block, centre)
+// (1064 of the 35,916 cached modules, all with that shape; no depth-compare instruction anywhere). The radius is in
+// texels of the map, so TOTK_SHADOW_RES=4096 makes the soft edge a quarter of the width the game was made with at 1024.
+// This multiplies the first Fma operand of those taps by soft * map side / 1024: 1 gives back the game's own edge width
+// at any shadow resolution, 2 twice that. Matched: OpStore of such an Fma into a Function variable whose load is an x or
+// y component of a sample coordinate on a 2D-array image. NULL: nothing matched or the knob is off.
+static float pcf_scale(void) {
+    static float k = -1;
+    if (k >= 0) return k;
+    float soft = (float)atof(cfg_value("TOTK_SHADOW_SOFT"));
+    int side = atoi(cfg_value("TOTK_SHADOW_RES"));
+    if (side < 1024) side = 1024;
+    k = soft > 0 ? soft * (float)side / 1024.0f : 0;
+    if (k > 0) rt_log("vk: shadow filter %.2fx the game's edge width (taps spread %.2fx)", soft, k);
+    return k;
+}
+
+static uint32_t *spirv_pcf_widen(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    float k = pcf_scale();
+    if (k <= 0 || (k > 0.99f && k < 1.01f) || n < 5) return NULL;
+    uint32_t bound = w[3];
+    if (bound > (1u << 22)) return NULL;
+    uint32_t *def = calloc(bound, sizeof *def);   // word offset of the instruction defining an id (selected ops only)
+    uint8_t *mark = calloc(bound, 1);              // 1: Function variable feeding a coordinate; 2: Fma to scale
+    uint32_t *o = NULL, glsl = 0, f32 = 0, nfma = 0;
+    uint64_t f32_end = 0;
+    if (!def || !mark) goto out;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!l || i + l > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == 11 && l >= 2 && a[0] < bound) glsl = a[0];
+        else if (op == SPV_OP_TYPE_FLOAT && l == 3 && a[1] == 32 && !f32) f32 = a[0], f32_end = i + l;
+        else if ((op == 25 || op == 27 || op == SPV_OP_TYPE_POINTER) && a[0] < bound) def[a[0]] = (uint32_t)i;
+        else if ((op == SPV_OP_VARIABLE || op == 61 || op == 65 || op == 80 || op == 169 || op == 12) && l >= 3 && a[1] < bound)
+            def[a[1]] = (uint32_t)i;
+        i += l;
+    }
+    if (!glsl || !f32) goto out;
+#define DEF(id, want) ((id) < bound && def[id] && (w[def[id]] & 0xffff) == (want) ? w + def[id] + 1 : NULL)
+    for (uint64_t i = 5; i < n;) {   // sample coordinates on 2D-array images
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if ((op == 87 || op == 88) && l >= 5) {
+            const uint32_t *ld = DEF(a[2], 61), *var = ld ? DEF(ld[2], SPV_OP_VARIABLE) : NULL;
+            const uint32_t *pt = var ? DEF(var[0], SPV_OP_TYPE_POINTER) : NULL, *si = pt ? DEF(pt[2], 27) : NULL;
+            const uint32_t *img = si ? DEF(si[1], 25) : NULL;
+            if (img && img[2] == 1 && img[4] == 1) {   // Dim 2D, Arrayed
+                const uint32_t *cc = DEF(a[3], 169);
+                cc = cc ? DEF(cc[4], 80) : DEF(a[3], 80);
+                if (cc)
+                    for (int m = 0; m < 2; m++) {
+                        const uint32_t *cl = DEF(cc[2 + m], 61);
+                        if (cl && cl[2] < bound) mark[cl[2]] |= 1;
+                    }
+            }
+        }
+        i += l;
+    }
+    for (uint64_t i = 5; i < n;) {   // stores of Fma(scale, uniform load, centre) into those variables
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == 62 && l >= 3 && a[0] < bound && (mark[a[0]] & 1)) {
+            const uint32_t *f = DEF(a[1], 12);
+            if (f && (w[def[a[1]]] >> 16) == 8 && f[0] == f32 && f[2] == glsl && f[3] == 50) {
+                const uint32_t *bl = DEF(f[5], 61), *ac = bl ? DEF(bl[2], 65) : NULL;
+                const uint32_t *uv = ac ? DEF(ac[2], SPV_OP_VARIABLE) : NULL;
+                if (uv && uv[2] == 2 && !(mark[a[1]] & 2)) mark[a[1]] |= 2, nfma++;   // Uniform storage class
+            }
+        }
+        i += l;
+    }
+#undef DEF
+    if (!nfma || bound + 1 + nfma > (1u << 22)) goto out;
+    o = malloc((n + 4 + (uint64_t)nfma * 5) * 4);
+    if (!o) goto out;
+    uint32_t kid = bound, next = bound + 1, kbits;
+    memcpy(&kbits, &k, 4);
+    uint64_t on = 0;
+    memcpy(o, w, 5 * 4), on = 5;
+    o[3] = bound + 1 + nfma;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (op == 12 && l == 8 && w[i + 2] < bound && (mark[w[i + 2]] & 2)) {
+            uint32_t t = next++;
+            o[on++] = 5u << 16 | 133, o[on++] = f32, o[on++] = t, o[on++] = w[i + 5], o[on++] = kid;   // OpFMul
+            memcpy(o + on, w + i, l * 4);
+            o[on + 5] = t;
+            on += l;
+        } else memcpy(o + on, w + i, l * 4), on += l;
+        i += l;
+        if (i == f32_end) o[on++] = 4u << 16 | SPV_OP_CONSTANT, o[on++] = f32, o[on++] = kid, o[on++] = kbits;
+    }
+    *out_n = on;
+    static int nlog;
+    if (nlog++ < 3) rt_log("vk: shadow filter: %u tap coordinates widened in a shader", nfma);
+out:
+    free(def), free(mark);
+    return o;
+}
+
 static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint64_t wide_n = 0;
+    uint32_t *wide = spirv_pcf_widen(w, words, &wide_n);
+    if (wide) w = wide, words = wide_n;
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
-    free(fixed);
+    free(fixed), free(wide);
     return r == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
 

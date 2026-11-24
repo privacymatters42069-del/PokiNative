@@ -54,6 +54,11 @@ Shader dann beim Spielen und ruckelt die erste Stunde. Also wirklich nachsehen, 
 **Jede neue Einstellung einmal im Launcher umschalten**, speichern, Spiel starten, und in der Log nachsehen, dass
 der Wert angekommen ist. Dann wieder zurückstellen und prüfen, dass auch das ankommt. Siehe die Regel oben.
 
+Für den standardmäßig aktiven Readback-Wächter zusätzlich prüfen, dass beide Launcher bei einer fehlenden
+Einstellung `[performance] readback_guard = 1` speichern und die erste passende `readback:`-Logzeile `guard on`
+meldet. Vor einer Veröffentlichung die 1-%-Lows und Ruckler mit `readback_guard = 0` in `karpur.ini` vergleichen;
+ein früherer Test zeigte dabei schlechtere 1-%-Lows.
+
 **Einmal spielen**, mindestens:
 
 - NPCs in einer Stadt — sie müssen bis etwa **30 m** sichtbar sein. Das ist der Prüfstein dafür, dass dem Spiel

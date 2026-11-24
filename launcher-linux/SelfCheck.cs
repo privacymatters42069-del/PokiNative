@@ -58,12 +58,20 @@ static class SelfCheck
             if (Environment.GetEnvironmentVariable("APPDIR") is { Length: > 0 } appDir)
                 Check(File.Exists(Path.Combine(appDir, "recomplauncher.json")),
                     "RecompLauncher manifest at AppImage root");
+            Check(Updates.IsSupportedAppImageAsset($"PokiNative-{Program.Version}-linux-x86_64.AppImage"),
+                "current PokiNative Linux AppImage release assets are recognized");
             Check(Updates.IsSupportedAppImageAsset("PokiNative-0.4.6.1-linux-x86_64.AppImage"),
-                "PokiNative Linux AppImage release assets are recognized");
+                "previous PokiNative Linux AppImage release assets remain recognized");
             Check(Updates.IsSupportedAppImageAsset("KarPur-Linux-Launcher-0.4.2.AppImage"),
                 "legacy KarPur Linux AppImage assets remain recognized");
-            Check(!Updates.IsSupportedAppImageAsset("PokiNative-0.4.6.1-Windows-x64.zip"),
+            Check(!Updates.IsSupportedAppImageAsset($"PokiNative-{Program.Version}-Windows-x64.zip"),
                 "non-AppImage release assets are ignored");
+            Check(Program.Version == typeof(Program).Assembly.GetName().Version?.ToString() &&
+                Program.BuildRevision == Program.Version,
+                "Linux launcher version follows the project assembly version");
+            Check(MainWindow.IssuesUrl == "https://github.com/privacymatters42069-del/PokiNative/issues/new" &&
+                MainWindow.PullRequestsUrl == "https://github.com/privacymatters42069-del/PokiNative/pulls",
+                "Linux launcher GitHub links target PokiNative");
             if (OperatingSystem.IsLinux() && requirePayload)
                 Check(File.Exists(Path.Combine(AppContext.BaseDirectory, "libSDL3.so")) &&
                     File.Exists(Path.Combine(AppContext.BaseDirectory, "libSDL3.so.0")),
@@ -124,7 +132,7 @@ static class SelfCheck
                 Install.PinLauncher(pinned, [1, 2, 3]);
                 Check(File.ReadAllText(installed) == "synthetic AppImage" &&
                     File.ReadAllText(Path.Combine(pinned, ".karpur-linux-launcher-version")) == Program.BuildRevision,
-                    "0.4.6.1 release replaces the obsolete 0.3.8.10 Deck launcher");
+                    "current release replaces the obsolete 0.3.8.10 Deck launcher");
                 File.WriteAllText(installed, "newer launcher");
                 File.WriteAllText(Path.Combine(pinned, ".karpur-linux-launcher-version"), "99.0.0");
                 Install.PinLauncher(pinned, [1, 2, 3]);
@@ -139,10 +147,18 @@ static class SelfCheck
             }
             string zipPath = Path.Combine(root, "sources.zip");
             using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
-            using (var writer = new StreamWriter(zip.CreateEntry("tools/hello.txt").Open())) writer.Write("synthetic source");
+            {
+                using (var writer = new StreamWriter(zip.CreateEntry("tools/hello.txt").Open())) writer.Write("synthetic source");
+                using (var writer = new StreamWriter(zip.CreateEntry("runtime/current.c").Open())) writer.Write("current source");
+            }
             string install = Path.Combine(root, "installation with spaces");
+            string runtime = Path.Combine(install, "runtime");
+            Directory.CreateDirectory(runtime);
+            File.WriteAllText(Path.Combine(runtime, "compass.c"), "obsolete source");
             Install.Unpack(zipPath, install, CancellationToken.None);
-            Check(File.ReadAllText(Path.Combine(install, "tools", "hello.txt")) == "synthetic source", "source payload extraction with spaces");
+            Check(File.ReadAllText(Path.Combine(install, "tools", "hello.txt")) == "synthetic source" &&
+                File.Exists(Path.Combine(runtime, "current.c")) && !File.Exists(Path.Combine(runtime, "compass.c")),
+                "source payload extraction removes obsolete runtime C files");
             DateTime modified = File.GetLastWriteTimeUtc(Path.Combine(install, "tools", "hello.txt"));
             Install.Unpack(zipPath, install, CancellationToken.None);
             Check(File.GetLastWriteTimeUtc(Path.Combine(install, "tools", "hello.txt")) == modified, "unchanged sources retain incremental build dates");
@@ -162,11 +178,19 @@ static class SelfCheck
             Check(ini.Get("operation_mode") == "handheld" && ini.Get("vk_present") == "fifo" &&
                 ini.Get("perf_overlay") == "fps" && ini.Get("gpu_name") == "Synthetic GPU" &&
                 ini.Get("submit_defer") == "0" && ini.Get("hot_cool") == "0" &&
-                ini.Get("output_res") == "800x450" && ini.Get("svhost_test") == "1" && ini.Get("volume") == "75" &&
+                ini.Get("readback_guard") == "1" && ini.Get("output_res") == "800x450" &&
+                ini.Get("svhost_test") == "1" && ini.Get("volume") == "75" &&
                 File.ReadAllText(iniPath).Contains("# keep this"), "settings preserve existing values and comments");
             Install.SaveSettings(install, "60", "1280x800", true, "fsr", "fifo", "fps",
                 gpu: "Synthetic GPU", safeSubmit: true, keepHotMemory: false);
-            Check(new Ini(iniPath).Get("hot_cool") == "300", "hot memory compatibility switch restores the default");
+            var optOut = new Ini(iniPath);
+            optOut.Set("performance", "readback_guard", "0");
+            optOut.Save();
+            Install.SaveSettings(install, "60", "1280x800", true, "fsr", "fifo", "fps",
+                gpu: "Synthetic GPU", safeSubmit: true, keepHotMemory: false);
+            var saved = new Ini(iniPath);
+            Check(saved.Get("hot_cool") == "300" && saved.Get("readback_guard") == "0",
+                "hot memory reset and readback guard opt-out are preserved");
             string profile = Install.Profile(install);
             Directory.CreateDirectory(profile);
             File.WriteAllBytes(Path.Combine(profile, "account.uid"), Enumerable.Range(0, 16).Select(i => (byte)i).ToArray());

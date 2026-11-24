@@ -58,7 +58,7 @@ static uint64_t n_waits, n_wait_fail, wait_us, wait_max_us;   // rd_lock: guarde
 
 static int watch_on(void) {
     if (on < 0) {
-        guard = rt_knob("READBACK_GUARD", "0") != 0;
+        guard = rt_knob("READBACK_GUARD", "1") != 0;
         on = guard || rt_knob("READBACK_WATCH", "0");
     }
     return on;

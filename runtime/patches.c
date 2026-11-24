@@ -49,6 +49,19 @@ void rt_patches_init(void) {
         const char *e = cfg_get(sets[i].env);
         // a set with a row in the settings table takes its default from there; the generated default serves the rest
         rt_patch_on[i] = (uint8_t)(cfg_meta(sets[i].env) ? cfg_bool(sets[i].env) : e && *e ? strcmp(e, "0") != 0 : sets[i].on);
+    }
+    // KarPur: the hook set of each exefs plugin that loaded (loader.c: its mod pack runs) is on unless its switch
+    // says 0; it routes the sites the plugin's init wrote (tools/plugin_hooks.py) to the plugin's code.
+    for (int p = 0; p < rt_plugin_count; p++) {
+        int k = rt_plugins[p].set ? rt_patch_set(rt_plugins[p].set) : -1;
+        if (k < 0 || !ldr_find(rt_plugins[p].module)) continue;
+        const char *e = cfg_get(sets[k].env);
+        if (e && !strcmp(e, "0")) continue;
+        if (!rt_patch_on[k]) rt_log("patches: %s on (exefs plugin %s of mod %s loaded)", sets[k].name,
+                                    rt_plugins[p].module, rt_plugins[p].mod);
+        rt_patch_on[k] = 1;
+    }
+    for (int i = 0; i < RT_PATCH_COUNT; i++) {
         n += (size_t)snprintf(list + n, sizeof list - n, "%s%s %s", i ? ", " : "", sets[i].name,
                               rt_patch_on[i] ? "on" : "off");
         if (n >= sizeof list) n = sizeof list - 1;

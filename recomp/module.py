@@ -33,12 +33,20 @@ def _read_encoded(img, off, enc, pc_base):
 
 
 class Module:
-    def __init__(self, name, path, base, simd='c'):
+    def __init__(self, name, path, base, simd='c', code=None, entries=()):
+        """code: {module offset: instruction word} lifted in place of the file's words (recomp/patches.py `code`, an
+        exefs plugin's start-up writes into its own image); entries: extra absolute function starts."""
         self.name = name
         self.nso = Nso(str(path))
         self.base = base
         n = self.nso
-        self.image = bytes(n.image)
+        img = bytearray(n.image)
+        for off, w in (code or {}).items():
+            if not n.text[0] <= off < n.text[0] + n.text[1] or off % 4:
+                raise ValueError(f'{name}+{off:#x}: code word outside .text')
+            img[off:off + 4] = w.to_bytes(4, 'little')
+        self.image = bytes(img)
+        self.extra_entries = list(entries)
         self.lo = base + n.text[0]
         self.hi = self.lo + n.text[1]
         self.words = np.frombuffer(self.image, dtype='<u4', count=n.text[1] // 4, offset=n.text[0])
@@ -83,7 +91,7 @@ class Module:
     def eh_frame_functions(self):
         """Function starts from .eh_frame_hdr's binary search table (absolute addresses)."""
         img, hdr = self.image, self.nso.eh_start
-        if not hdr or hdr >= len(img):
+        if not hdr or hdr >= len(img) or self.nso.eh_end <= hdr:   # an empty range: no .eh_frame_hdr (exefs plugins)
             return []
         _, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
         off = hdr + 4
@@ -104,7 +112,7 @@ class Module:
         """(begin, end) absolute address ranges of the FDEs listed in .eh_frame_hdr. Only FDEs whose pc_begin is pcrel
         sdata4 and agrees with the table are returned (the usual encoding); others are left out."""
         img, hdr = self.image, self.nso.eh_start
-        if not hdr or hdr >= len(img):
+        if not hdr or hdr >= len(img) or self.nso.eh_end <= hdr:   # an empty range: no .eh_frame_hdr (exefs plugins)
             return []
         _, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
         off = hdr + 4
@@ -127,7 +135,8 @@ class Module:
         return out
 
     def seeds(self):
-        """Known function starts: .eh_frame_hdr, exported FUNC symbols, R_AARCH64_RELATIVE targets in .text."""
+        """Known function starts: .eh_frame_hdr, exported FUNC symbols, R_AARCH64_RELATIVE targets in .text, DT_INIT and
+        DT_FINI."""
         starts = set(self.eh_frame_functions())
         for _, info, shndx, value, _ in self.nso.syms:
             if shndx and (info & 0xF) == 2:
@@ -135,4 +144,8 @@ class Module:
         for _, typ, _, add in self.nso.relocs:
             if typ == R_AARCH64_RELATIVE:
                 starts.add(self.base + add)
+        for tag in (12, 13):   # DT_INIT, DT_FINI: rtld calls them (an exefs plugin's start-up has no symbol)
+            if tag in self.nso.dyn:
+                starts.add(self.base + self.nso.dyn[tag])
+        starts.update(self.extra_entries)
         return sorted(a for a in starts if self.in_text(a))

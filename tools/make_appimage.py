@@ -47,7 +47,7 @@ def fetch(url, digest, filename):
                 return target
     temp = target.with_suffix('.download')
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'KarPur-AppImage/0.4.6.1'}), timeout=90) as response, temp.open('wb') as f:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'KarPur-AppImage/0.4.6.2'}), timeout=90) as response, temp.open('wb') as f:
             shutil.copyfileobj(response, f)
         with temp.open('rb') as f:
             if hashlib.file_digest(f, 'sha256').hexdigest() != digest:

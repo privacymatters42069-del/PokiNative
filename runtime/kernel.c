@@ -49,7 +49,7 @@ void kern_set_main_params(int prio, int core, uint64_t stack) {
 }
 #define FIBER_MAX 1024
 
-enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
+enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM, O_USER_SERVER, O_USER_CLIENT, O_PROCESS };
 _Static_assert(O_EVENT_W < O_SESSION, "handle kinds");
 enum { W_NONE = KERN_WAIT_NONE, W_LOCK = KERN_WAIT_LOCK, W_CONDVAR = KERN_WAIT_CONDVAR, W_ADDRESS = KERN_WAIT_ADDRESS,
        W_SYNC = KERN_WAIT_SYNC };
@@ -1582,6 +1582,58 @@ static void sleep_ns(RtThread *t, int64_t ns) {
 }
 
 // ---- synchronization objects
+// ---- user sessions (CreateSession, SendSyncRequest, ReplyAndReceive) between guest threads, and process handles.
+// An exlaunch-style exefs plugin (plugin.c) sends itself a request with a copy of the pseudo handle 0xFFFF8001 to
+// get a real handle to its own process, which MapProcessMemory then takes. Messages are the 0x100-byte TLS buffer;
+// copy handles are translated (only the current-process pseudo handle; anything else is refused), move handles and
+// buffers are not supported.
+typedef struct {
+    int server_open, client_open;
+    int pending;    // a request waits for ReplyAndReceive
+    int taken;      // the server has it; the client waits for the reply
+    int replied;
+    uint32_t msg[64];
+} UserSession;
+
+static int g_process_obj;   // the object of every process handle (there is one process)
+
+static void us_put(UserSession *u) {
+    if (!u->server_open && !u->client_open) free(u);
+}
+
+// Copies a request into the server's buffer with copy handles translated (holding G). 0 on success.
+static uint32_t us_translate(uint32_t *to, const uint32_t *from) {
+    memcpy(to, from, sizeof(uint32_t) * 64);
+    if (!(from[1] & 0x80000000u)) return 0;
+    uint32_t d = from[2];
+    unsigned copies = (d >> 1) & 15, moves = (d >> 5) & 15, at = 3 + ((d & 1) ? 2 : 0);
+    if (moves) return R_BAD_STATE;
+    for (unsigned i = 0; i < copies; i++) {
+        uint32_t h = from[at + i];
+        if (h != 0xFFFF8001u) {
+            rt_log("kernel: user session request copies handle %#x (only the current process is supported)", h);
+            return R_BAD_HANDLE;
+        }
+        to[at + i] = h_new(O_PROCESS, &g_process_obj);
+    }
+    return 0;
+}
+
+uint32_t kern_process_handle_new(void) {
+    lock();
+    uint32_t h = h_new(O_PROCESS, &g_process_obj);
+    unlock();
+    return h;
+}
+
+int kern_is_process_handle(uint32_t h) {
+    if (h == 0xFFFF8001u) return 1;
+    lock();
+    int r = h_peek(h, O_PROCESS) != NULL;
+    unlock();
+    return r;
+}
+
 static int sig_obj(uint32_t h, int *bad) {   // 1 = signaled (holding G)
     unsigned i = h - 0x1000;
     if (h == H_CUR_THREAD) return 0;
@@ -1625,6 +1677,15 @@ static uint32_t handle_close(uint32_t h) {
             RtThread *t = o;
             t->closed = 1;
             if (t->exited) thr_free(t);
+            ok = 1;
+        } else if (type == O_USER_SERVER || type == O_USER_CLIENT) {
+            UserSession *u = o;
+            if (type == O_USER_SERVER) u->server_open = 0;
+            else u->client_open = 0;
+            wake_sync_waiters();   // a client waiting for its reply returns "session closed"
+            us_put(u);
+            ok = 1;
+        } else if (type == O_PROCESS) {
             ok = 1;
         }
         if (ok) {
@@ -1990,6 +2051,117 @@ int kern_svc(Cpu *c, uint32_t imm) {
         }
         unlock();
         x[0] = r;
+        return 1;
+    }
+    case 0x40: {   // CreateSession(w2 is light, x3 name -> w1 server, w2 client)
+        if (x[2]) {
+            x[0] = R_BAD_STATE;   // light sessions are not supported
+            return 1;
+        }
+        UserSession *u = calloc(1, sizeof *u);
+        if (!u) rt_fatal("kernel: session allocation");
+        u->server_open = u->client_open = 1;
+        lock();
+        x[1] = h_new(O_USER_SERVER, u);
+        x[2] = h_new(O_USER_CLIENT, u);
+        unlock();
+        x[0] = R_OK;
+        return 1;
+    }
+    case 0x21: {   // SendSyncRequest(w0 handle) on a user session; host service sessions go on to ipc.c
+        lock();
+        UserSession *u = h_peek((uint32_t)x[0], O_USER_CLIENT);
+        if (!u) {
+            unlock();
+            return 0;
+        }
+        RtThread *t = cur(imm);
+        uint32_t *m = (uint32_t *)(uintptr_t)c->tpidrro;
+        uint32_t r = R_OK;
+        if (!u->server_open) r = KERN_R_SESSION_CLOSED;
+        else if (u->pending || u->taken) r = R_BAD_STATE;   // one request in flight per session
+        else {
+            r = us_translate(u->msg, m);
+            if (!r) {
+                u->pending = 1;
+                u->replied = 0;
+                wake_sync_waiters();
+                while (!u->replied && u->server_open) block(t, W_SYNC, -1);
+                if (u->replied) memcpy(m, u->msg, sizeof u->msg);
+                else r = KERN_R_SESSION_CLOSED;
+                u->pending = u->taken = u->replied = 0;
+            }
+        }
+        unlock();
+        x[0] = r;
+        return 1;
+    }
+    case 0x43: {   // ReplyAndReceive(x1 handles, w2 count, w3 reply target, x4 timeout -> w1 index)
+        RtThread *t = cur(imm);
+        const uint32_t *hs = (const uint32_t *)(uintptr_t)x[1];
+        int n = (int)x[2];
+        uint32_t target = (uint32_t)x[3];
+        int64_t ns = (int64_t)x[4];
+        uint32_t *m = (uint32_t *)(uintptr_t)c->tpidrro;
+        if (n < 0 || n > 64 || (!hs && n)) {
+            x[0] = R_BAD_STATE;
+            return 1;
+        }
+        lock();
+        uint32_t r = R_OK;
+        int idx = -1;
+        if (target) {
+            UserSession *u = h_peek(target, O_USER_SERVER);
+            if (!u) r = R_BAD_HANDLE;
+            else if (u->taken && !u->replied) {
+                memcpy(u->msg, m, sizeof u->msg);
+                u->replied = 1;
+                wake_sync_waiters();
+            }
+        }
+        uint64_t start = kern_now_ns();
+        while (!r) {
+            for (int i = 0; i < n && idx < 0; i++) {
+                UserSession *u = h_peek(hs[i], O_USER_SERVER);
+                if (!u) {
+                    r = R_BAD_HANDLE;
+                    idx = i;
+                } else if (!u->client_open && !u->pending) {
+                    r = KERN_R_SESSION_CLOSED;
+                    idx = i;
+                } else if (u->pending && !u->taken) {
+                    memcpy(m, u->msg, sizeof u->msg);
+                    u->taken = 1;
+                    idx = i;
+                }
+            }
+            if (idx >= 0 || r) break;
+            if (t->cancel) {
+                t->cancel = 0;
+                r = R_CANCELLED;
+                break;
+            }
+            int64_t left = ns;
+            if (ns > 0) {
+                uint64_t spent = kern_now_ns() - start;
+                if (spent >= (uint64_t)ns) {
+                    r = R_TIMEOUT;
+                    break;
+                }
+                left = ns - (int64_t)spent;
+            }
+            if (!n && !ns) {
+                r = R_TIMEOUT;
+                break;
+            }
+            if (block(t, W_SYNC, left) == R_TIMEOUT) {
+                r = R_TIMEOUT;
+                break;
+            }
+        }
+        unlock();
+        x[0] = r;
+        x[1] = idx >= 0 ? (uint64_t)idx : 0;
         return 1;
     }
     case 0x18: {   // WaitSynchronization(-> w1 index; x1 handles, w2 count, x3 timeout)

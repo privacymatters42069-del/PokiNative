@@ -44,8 +44,8 @@ static const struct { uint32_t imm; const char *name; } unimplemented[] = {
     {0x13, "MapSharedMemory"}, {0x14, "UnmapSharedMemory"},
     {0x23, "SendAsyncRequestWithUserBuffer"}, {0x28, "ReturnFromException"}, {0x2A, "FlushEntireDataCache"},
     {0x2F, "GetLastThreadInfo"}, {0x32, "SetThreadActivity"}, {0x33, "GetThreadContext3"},
-    {0x36, "SynchronizePreemptionState"}, {0x40, "CreateSession"}, {0x41, "AcceptSession"},
-    {0x43, "ReplyAndReceive"}, {0x44, "ReplyAndReceiveWithUserBuffer"}, {0x48, "MapPhysicalMemoryUnsafe"},
+    {0x36, "SynchronizePreemptionState"}, {0x41, "AcceptSession"},
+    {0x44, "ReplyAndReceiveWithUserBuffer"}, {0x48, "MapPhysicalMemoryUnsafe"},
     {0x49, "UnmapPhysicalMemoryUnsafe"}, {0x4B, "CreateCodeMemory"}, {0x50, "CreateSharedMemory"},
     {0x51, "MapTransferMemory"}, {0x52, "UnmapTransferMemory"}, {0x70, "CreatePort"}, {0x72, "ConnectToPort"},
 };
@@ -122,6 +122,7 @@ static void get_info(Cpu *c, uint64_t pc) {
     case 18: v = PROGRAM_ID; break;
     case 20: v = user_exception_context(); break;   // the SDK keeps e.g. the dying message at +0x1C0
     case 23: v = 1; break;
+    case 65001: v = kern_process_handle_new(); break;   // Atmosphere's current-process handle (exefs plugins ask)
     default: {
         char why[64];
         snprintf(why, sizeof why, "GetInfo id %u (handle %#x, sub id %#llx)", id, (uint32_t)c->x[2],
@@ -190,6 +191,9 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
     if (kern_svc(c, imm)) return;
     uint64_t *x = c->x;
     switch (imm) {
+    case 0x74: case 0x75:   // MapProcessMemory / UnmapProcessMemory: plugin.c
+        if (plugin_svc(c, imm)) return;
+        svc_fatal(c, imm, pc, "not handled by plugin.c");
     case 0x15: case 0x1F: case 0x21: case 0x22:
         if (ipc_svc(c, imm)) return;
         svc_fatal(c, imm, pc, "not handled by ipc.c");
@@ -268,6 +272,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         return;
     }
     case 0x29: get_info(c, pc); return;
+    case 0x1E: x[0] = rt_ticks(); return;   // GetSystemTick (the SDK reads the counter itself; an exefs plugin asks)
     case 0x07: {   // ExitProcess, as closing the window (gfx_window_closed): pipeline cache, shader records and
                    // profile saved, logs flushed, exit code 0
         char at[160];

@@ -1,142 +1,148 @@
-name: Build PokiNative 0.4.6.1
+name: Prepare release
 
 on:
-  push:
-    tags:
-      - "0.4.6.1"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "New numeric version, for example 0.4.6.3"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: prepare-release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
-  validate:
+  prepare:
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - name: Check that game content is not in the repository
-        run: python tools/check_content.py
-      - name: Install test dependencies
-        run: python -m pip install -r tools/requirements.txt
-      - name: Check launcher package rules
-        run: python tools/check_launcher.py
-      - name: Extraction tests
-        run: python tests/test_extract.py
-      - name: RomFS tests
-        run: python tests/test_romfs.py
-      - name: Phase report tests
-        run: python tests/test_phases.py
-      - name: Install lifter build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld llvm ninja-build
-      - name: Lifter differential tests
-        run: python tests/lifter/test_lifter.py
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
 
-  build-windows:
-    needs: validate
-    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-      - uses: msys2/setup-msys2@v2
-        id: msys2
-        with:
-          msystem: UCRT64
-          update: true
-          install: make mingw-w64-ucrt-x86_64-gcc
-      - name: Build hactool
-        env:
-          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: python tools/build_hactool.py
-      - name: Build shader translator
-        run: python tools/build_xlate.py
-      - name: Build Windows launcher
-        run: python tools/make_launcher.py
-      - name: Upload Windows release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: PokiNative-0.4.6.1-Windows-x64
-          path: |
-            dist/KarPur-Launcher-Windows-x86_x64.exe
-            dist/KarPur-Launcher-Windows-x86_x64.exe.sha256
-          if-no-files-found: error
-
-  build-linux:
-    needs: validate
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-      - name: Install AppImage and SDL build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake clang lld llvm ninja-build pkg-config squashfs-tools \
-            libasound2-dev libdbus-1-dev libdecor-0-dev libdrm-dev libegl1-mesa-dev \
-            libgbm-dev libibus-1.0-dev libopus-dev libpipewire-0.3-dev libpulse-dev \
-            libsamplerate0-dev libudev-dev libvulkan-dev libvpx-dev libwayland-dev \
-            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
-            libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev \
-            libxxf86vm-dev libxtst-dev libzstd-dev libclang-rt-18-dev
-      - name: Build Linux AppImage
-        run: python tools/make_appimage.py
-      - name: Upload Linux release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: PokiNative-0.4.6.1-Linux-x86_64
-          path: |
-            dist/linux/PokiNative-0.4.6.1-linux-x86_64.AppImage
-            dist/linux/PokiNative-0.4.6.1-linux-x86_64.AppImage.sha256
-          if-no-files-found: error
-
-  create-draft-release:
-    if: github.event_name == 'push' && github.ref == 'refs/tags/0.4.6.1'
-    needs:
-      - build-windows
-      - build-linux
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download Windows files
-        uses: actions/download-artifact@v4
-        with:
-          name: PokiNative-0.4.6.1-Windows-x64
-          path: release-assets
-      - name: Download Linux files
-        uses: actions/download-artifact@v4
-        with:
-          name: PokiNative-0.4.6.1-Linux-x86_64
-          path: release-assets
-      - name: Create or refresh the draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate input
         shell: bash
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          draft_state="$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
-          if [ "$draft_state" = "false" ]; then
-            echo "Refusing to modify an already published release: $tag" >&2
+
+          if [[ "$GITHUB_REF_TYPE" != "branch" ]]; then
+            echo "::error::Run this workflow on a branch, not a tag."
             exit 1
-          elif [ "$draft_state" = "true" ]; then
-            gh release edit "$tag" --draft --title "PokiNative $tag" \
-              --notes-file docs/releases/0.4.6.1.md
-            gh release upload "$tag" release-assets/* --clobber
-          else
-            gh release create "$tag" release-assets/* --draft --verify-tag \
-              --title "PokiNative $tag" --notes-file docs/releases/0.4.6.1.md
           fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Version must be numeric, such as 0.4.6.3."
+            exit 1
+          fi
+
+      - name: Check out the selected branch and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag and find previous release
+        id: release_context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git show-ref --verify --quiet "refs/tags/$VERSION"; then
+            echo "::error::Tag $VERSION already exists. Choose a new version."
+            exit 1
+          fi
+
+          if [[ -e "docs/releases/$VERSION.md" ]]; then
+            echo "::error::docs/releases/$VERSION.md already exists; refusing to overwrite it."
+            exit 1
+          fi
+
+          if ! previous_tag="$(git describe --tags --abbrev=0 --match '[0-9]*' "$GITHUB_SHA" 2>/dev/null)"; then
+            echo "::error::Could not find a previous numeric version tag."
+            exit 1
+          fi
+
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "Preparing $VERSION from changes since $previous_tag."
+
+      - name: Set both launcher versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          projects = (
+              Path("launcher/KarPurLauncher.csproj"),
+              Path("launcher-linux/KarPurLauncher.Linux.csproj"),
+          )
+
+          for path in projects:
+              if not path.is_file():
+                  raise SystemExit(f"Required project file is missing: {path}")
+
+              text = path.read_text(encoding="utf-8")
+              pattern = re.compile(r"(<Version>)[^<]*(</Version>)")
+              updated, count = pattern.subn(
+                  lambda match: f"{match.group(1)}{version}{match.group(2)}",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one <Version> element in {path}")
+
+              path.write_text(updated, encoding="utf-8", newline="")
+              print(f"Set {path} to {version}")
+          PY
+
+      - name: Generate release notes from the previous tag
+        env:
+          PREVIOUS_TAG: ${{ steps.release_context.outputs.previous_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p docs/releases
+          notes_file="docs/releases/$VERSION.md"
+
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f "tag_name=$VERSION" \
+            -f "target_commitish=$GITHUB_SHA" \
+            -f "previous_tag_name=$PREVIOUS_TAG" \
+            --jq '.body' > "$notes_file"
+
+          if [[ ! -s "$notes_file" ]]; then
+            echo "::error::GitHub generated an empty release-notes file."
+            exit 1
+          fi
+
+          echo "Created $notes_file"
+
+      - name: Commit and push the release preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- \
+            launcher/KarPurLauncher.csproj \
+            launcher-linux/KarPurLauncher.Linux.csproj \
+            "docs/releases/$VERSION.md"
+
+          if git diff --cached --quiet; then
+            echo "::error::There are no release-preparation changes to commit."
+            exit 1
+          fi
+
+          git commit -m "Prepare release $VERSION"
+          git push origin "HEAD:$GITHUB_REF_NAME"

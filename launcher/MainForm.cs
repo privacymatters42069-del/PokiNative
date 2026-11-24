@@ -1215,6 +1215,7 @@ partial class MainForm : Form
             string level = Value(stutter);
             ini.Set("performance", "acquire_ahead", level == "off" ? "0" : "1");
             ini.Set("performance", "core_lazy", level == "aggressive" ? "1" : "0");
+            ini.Set("performance", "readback_guard", ini.Get("readback_guard") == "0" ? "0" : "1");
             ini.Set("compatibility", "submit_defer", safeSubmit.Checked ? "0" : "1");
             ini.Set("compatibility", "hot_cool", keepHotMemory.Checked ? "0" : "300");
             ini.Save();

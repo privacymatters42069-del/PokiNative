@@ -1,0 +1,24 @@
+// TOTK_LIGHTING_HALF: view distance of every 2nd pixel in x and y, so lighting_half.comp's scattered reads hit a
+// quarter-size single-channel image instead of the full depth buffer.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D scene_depth;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D result_depth;
+layout(push_constant) uniform P {
+    vec4 projection; // p22, p23, p32, clip depth -w..w
+    vec4 controls;   // width, height, AO level, indirect-light level
+    vec4 camera;
+} p;
+
+float view_distance(float depth) {
+    float ndc = p.projection.w > 0.5 ? depth * 2.0 - 1.0 : depth;
+    float divisor = ndc * p.projection.z - p.projection.x;
+    return abs(divisor) > 1e-6 ? abs(p.projection.y / divisor) : 1e8;
+}
+
+void main() {
+    ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = ivec2(p.controls.xy);
+    if (any(greaterThanEqual(h * 2, size))) return;
+    imageStore(result_depth, h, vec4(view_distance(texelFetch(scene_depth, h * 2, 0).r)));
+}

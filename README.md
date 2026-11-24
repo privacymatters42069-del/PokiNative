@@ -1,6 +1,6 @@
 <div align="center">
 
-![PokiNative](https://github.com/user-attachments/assets/7f471ad8-26c9-42bb-8381-840466c7921d)
+![PokiNative](docs/images/pokinative-logo.png)
 
 
 **Pokémon Scarlet & Violet, recompiled into a native PC game.**
@@ -9,7 +9,7 @@
 
 **Quick start:** Use your own XCI, the 4.0.0 update, and `prod.keys`; build with PokiNative's launcher or RecompLauncher. RecompLauncher accepts XCI base games only because it cannot request the firmware folder needed by an NSP base game.
 
-[Download the launcher](https://github.com/privacymatters42069-del/PokiNative/releases) · [0.4.6.1 release notes](docs/releases/0.4.6.1.md) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
+[Download the launcher](https://github.com/privacymatters42069-del/PokiNative/releases) · [0.4.6.4 release notes](docs/releases/0.4.6.4.md) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
 
 <a href="https://recomplauncher.com/game/pokinative"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a> [![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recomplauncher.com/dev/privacymatters42069-del)
 
@@ -28,13 +28,7 @@ The information below documents the last release and remains available for refer
 > **If the game crashes, try the two independent Compatibility switches in Settings.** The original mode changes GPU submission timing; **Keep hot memory active** sets `hot_cool = 0` and can be turned off again. On supported desktop PCs, enabling Resizable BAR may also improve performance; see the [launcher guide](docs/launcher.md#die-tabs) for the general UEFI/BIOS steps. Results vary by system.
 
 > [!IMPORTANT]
-> **AMD GPU owners and Vulkan people wanted.** In the 0.4.6.1 candidate, AMD RDNA 3 GPUs enable the extra transform-feedback
-> barriers by default during character creation as an unconfirmed mitigation; set `TOTK_XFB_SYNC=0` to opt out. Flickering trees in compatibility
-> mode is also AMD-specific and hard to track down: the maintainer has no AMD card
-> and knows nobody who does. If you own one and know Vulkan or graphics debugging, your help would make a real
-> difference — testing, logs, a pull request, or even just pointing out what to look at. Contributions put together
-> with the help of an AI assistant are very welcome too. Please open an issue or pull request; see
-> [Troubleshooting](#troubleshooting) and the open issues for what is known so far.
+> **AMD RDNA 2/3 crash fix:** The Vulkan command-recorder thread is disabled by default on AMD GPUs. This was the change in the [pre-0.4.5 test build](https://github.com/privacymatters42069-del/PokiNative/releases/tag/pre0.4.5) that resolved the reported crashes for testers. Set `TOTK_VK_RECORDER=1` to opt back in. This is separate from `TOTK_XFB_SYNC`; leave that setting unchanged for this fix. Further AMD and Vulkan testing is welcome — see [Troubleshooting](#troubleshooting) and the open issues for what still needs investigation.
 
 ## What is PokiNative?
 
@@ -173,7 +167,7 @@ in the data your own copy of the game already contains; PokiNative adds none.
 
 ## Getting started
 
-1. **Download** `KarPur-Launcher-Windows-x86_x64.exe` for Windows or `PokiNative-0.4.6.1-linux-x86_64.AppImage` for Linux from the [releases page](https://github.com/privacymatters42069-del/PokiNative/releases). Windows may warn that the file is unknown, because it is not signed: choose *More info* → *Run anyway*. Linux instructions are in the [AppImage guide](docs/launcher-linux.md).
+1. **Download** `KarPur-Launcher-Windows-x86_x64.exe` for Windows or `PokiNative-0.4.6.4-linux-x86_64.AppImage` for Linux from the [releases page](https://github.com/privacymatters42069-del/PokiNative/releases). Windows may warn that the file is unknown, because it is not signed: choose *More info* → *Run anyway*. Linux instructions are in the [AppImage guide](docs/launcher-linux.md).
 2. **Choose your files** in the *Setup* tab:
    - the base game (`.xci`, or an eShop `.nsp` together with a *Firmware folder*)
    - the update and DLC (`.nsp`)
