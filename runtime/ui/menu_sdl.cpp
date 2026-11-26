@@ -1,10 +1,11 @@
-// SDL3 adapter of the in-game menu: the window's events to menu events (menu.h), as ui/menu_win.cpp does for Win32.
+// SDL3 adapter of the in-game menu and text-entry overlay: the window's events to menu events (menu.h), as
+// ui/menu_win.cpp does for Win32.
 // Window thread (gfx_window_sdl.c's event loop, after input_sdl_event).
 //
 // F1 opens and closes the menu, Esc opens it (with the menu open, Esc goes to the menu, which closes). Esc also releases
-// the cursor (input_sdl.c sees the event first; closing the menu gives the capture back). While the menu is open, its
-// keys, the mouse and focus changes go to it; the game reads the keyboard through input_sdl.c and gets nothing while
-// the menu is open (input_menu). Mouse positions come in window units and go to the menu in pixels.
+// the cursor (input_sdl.c sees the event first; closing the menu gives the capture back). While the menu or text-entry
+// modal is open, keys, text, mouse and focus changes go to ImGui; the game reads nothing while input_block is active.
+// Mouse positions come in window units and go to the menu in pixels.
 #include <SDL3/SDL.h>
 
 #include "imgui.h"
@@ -44,7 +45,7 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
-        if (!e->key.repeat && ((e->key.scancode == SDL_SCANCODE_F1 &&
+        if (!menu_text_entry_active() && !e->key.repeat && ((e->key.scancode == SDL_SCANCODE_F1 &&
                                 (!input_deck_mode() || !input_deck_paddle_available())) ||
                                (e->key.scancode == SDL_SCANCODE_ESCAPE && !input_deck_mode() && !menu_is_open()))) {
             menu_toggle();
@@ -56,16 +57,19 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         }
         [[fallthrough]];
     case SDL_EVENT_KEY_UP:
-        if (!menu_is_open()) return;
+        if (!menu_is_open() && !menu_text_entry_active()) return;
         if (input_deck_mode() && e->key.scancode == SDL_SCANCODE_ESCAPE) return;
         if (ImGuiKey k = key_of(e->key.scancode)) menu_event_key(k, e->type == SDL_EVENT_KEY_DOWN);
         return;
+    case SDL_EVENT_TEXT_INPUT:
+        if (menu_text_entry_active()) menu_event_text(e->text.text);
+        return;
     case SDL_EVENT_MOUSE_MOTION:
-        if (menu_is_open()) menu_event_mouse_pos(e->motion.x * d, e->motion.y * d);
+        if (menu_is_open() || menu_text_entry_active()) menu_event_mouse_pos(e->motion.x * d, e->motion.y * d);
         return;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        if (!menu_is_open()) return;
+        if (!menu_is_open() && !menu_text_entry_active()) return;
         int b = e->button.button == SDL_BUTTON_LEFT ? 0 : e->button.button == SDL_BUTTON_RIGHT ? 1
               : e->button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
         if (b < 0) return;
@@ -74,7 +78,7 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         return;
     }
     case SDL_EVENT_MOUSE_WHEEL:
-        if (menu_is_open()) menu_event_wheel(e->wheel.x, e->wheel.y);
+        if (menu_is_open() || menu_text_entry_active()) menu_event_wheel(e->wheel.x, e->wheel.y);
         return;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
     case SDL_EVENT_WINDOW_FOCUS_LOST:

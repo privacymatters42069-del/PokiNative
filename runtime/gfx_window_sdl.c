@@ -60,6 +60,27 @@ static void post(int ev) {
     SDL_PushEvent(&e);
 }
 
+static void apply_text_input(void *arg) {
+    int on = *(const int *)arg;
+    if (!g_win) {
+        rt_log("gfx: cannot change text input without an SDL window");
+        return;
+    }
+    if (on) {
+        if (!SDL_StartTextInput(g_win)) rt_log("gfx: SDL_StartTextInput failed (%s)", SDL_GetError());
+    } else if (!SDL_StopTextInput(g_win)) {
+        rt_log("gfx: SDL_StopTextInput failed (%s)", SDL_GetError());
+    }
+}
+
+void gfx_window_text_input(int on) {
+    if (!g_win) {
+        rt_log("gfx: text input requested before the SDL window exists");
+        return;
+    }
+    run_on_window(apply_text_input, &on);
+}
+
 double gfx_window_sdl_density(void) { return __atomic_load_n(&g_density_milli, __ATOMIC_RELAXED) / 1000.0; }
 
 SDL_Window *gfx_window_sdl(void) { return g_win; }

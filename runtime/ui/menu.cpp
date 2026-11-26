@@ -1,6 +1,6 @@
 // The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
-// end on our device and the menu's pages. Free of any window system (menu.h). ImGui runs on the present path only,
-// under gfx_present.c's present lock; the event functions only queue.
+// end on our device, the menu's pages and the modal software keyboard. Free of any window system (menu.h). ImGui runs on
+// the present path only, under gfx_present.c's present lock; the event functions only queue.
 //
 // The Vulkan set-up follows LAS Recomp's runtime/nvn/vulkan/imgui_glue.cpp (https://github.com/peiikai/LASRecomp @
 // da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai): dynamic rendering into the swapchain
@@ -42,11 +42,16 @@ extern "C" {
 #include "input_map.h"
 #include "perfmon.h"
 #include "platform/platform.h"
+#include "swkbd.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void rt_fatal(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+#if defined(__linux__)
+void gfx_window_text_input(int on);
+#endif
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
@@ -105,7 +110,7 @@ extern "C" void menu_open_controls(void);
 // F1 / Esc: the Controls page (key mapping, controller, rumble, mouse), the settings being the launcher's; TOTK_MENU_LOCK=0
 // opens the whole old menu instead
 extern "C" void menu_toggle(void) {
-    if (g_failed_flag()) return;
+    if (g_failed_flag() || menu_text_entry_active()) return;
     static int lock = -1;
     if (lock < 0) lock = rt_knob("MENU_LOCK", "1");
     if (lock) g_locked.store(1);
@@ -113,15 +118,77 @@ extern "C" void menu_toggle(void) {
     change_open(-1);
 }
 
-// ---- events from the window adapter, queued while the menu is open; the present path hands them to ImGui
-enum { EV_KEY, EV_POS, EV_BUTTON, EV_WHEEL, EV_FOCUS, EV_MAX = 256 };
-struct Ev { int type, a, b; float x, y; };
+// ---- events from the window adapter, queued while the menu or text entry is open; the present path hands them to ImGui
+enum { EV_KEY, EV_POS, EV_BUTTON, EV_WHEEL, EV_FOCUS, EV_TEXT, EV_MAX = 256 };
+struct Ev { int type, a, b; float x, y; char text[32]; };
 static PlatMutex ev_lock = PLAT_MUTEX_INIT;
 static Ev ev_q[EV_MAX];
 static int ev_n;
 
+static std::atomic<int> g_text_entry_open;
+static PlatMutex g_text_entry_lock = PLAT_MUTEX_INIT;
+static PlatEvent g_text_entry_done;
+static PlatOnce g_text_entry_once = PLAT_ONCE_INIT;
+static SwkbdRequest g_text_entry_req;
+static char g_text_entry_prompt[0x101 * 4 + 1];
+static char g_text_entry_text[KB_LIMIT * 4 + 1];
+static int g_text_entry_result, g_text_entry_focused;
+
+static void text_entry_event_init(void *) { plat_event_init(&g_text_entry_done, 1, 0); }
+
+static void text_entry_finish(int accepted) {
+    plat_mutex_lock(&g_text_entry_lock);
+    if (!g_text_entry_open.load(std::memory_order_relaxed)) {
+        plat_mutex_unlock(&g_text_entry_lock);
+        return;
+    }
+    g_text_entry_result = accepted;
+    g_text_entry_open.store(0, std::memory_order_release);
+    plat_mutex_unlock(&g_text_entry_lock);
+    plat_event_set(&g_text_entry_done);
+}
+
+extern "C" int menu_text_entry_active(void) { return g_text_entry_open.load(std::memory_order_acquire); }
+
+extern "C" int menu_text_entry_run(const SwkbdRequest *req, uint16_t *out, size_t cap, size_t *n) {
+    if (!req || !out || !n) rt_fatal("swkbd: invalid SDL text-entry request");
+    plat_once(&g_text_entry_once, text_entry_event_init, NULL);
+    plat_mutex_lock(&g_text_entry_lock);
+    if (g_text_entry_open.load(std::memory_order_relaxed)) {
+        plat_mutex_unlock(&g_text_entry_lock);
+        rt_fatal("swkbd: overlapping SDL text-entry requests");
+    }
+    g_text_entry_req = *req;
+    swkbd_utf16_to_utf8(req->prompt, 0x100, g_text_entry_prompt, sizeof g_text_entry_prompt);
+    swkbd_utf16_to_utf8(req->initial, KB_LIMIT, g_text_entry_text, sizeof g_text_entry_text);
+    g_text_entry_focused = 0;
+    g_text_entry_result = 0;
+    plat_event_reset(&g_text_entry_done);
+    g_text_entry_open.store(1, std::memory_order_release);
+    plat_mutex_unlock(&g_text_entry_lock);
+
+    plat_mutex_lock(&ev_lock);
+    ev_n = 0;
+    plat_mutex_unlock(&ev_lock);
+    g_reset.store(1, std::memory_order_relaxed);
+#if defined(__linux__)
+    gfx_window_text_input(1);
+#endif
+    plat_event_wait(&g_text_entry_done);
+#if defined(__linux__)
+    gfx_window_text_input(0);
+#endif
+
+    plat_mutex_lock(&g_text_entry_lock);
+    int accepted = g_text_entry_result;
+    *n = accepted ? swkbd_utf8_to_utf16(g_text_entry_text, out, cap) : 0;
+    if (*n < cap) out[*n] = 0;
+    plat_mutex_unlock(&g_text_entry_lock);
+    return accepted;
+}
+
 static void push(Ev e) {
-    if (!menu_is_open()) return;
+    if (!menu_is_open() && !menu_text_entry_active()) return;
     plat_mutex_lock(&ev_lock);
     if (e.type == EV_POS && ev_n && ev_q[ev_n - 1].type == EV_POS) ev_q[ev_n - 1] = e;   // only the newest position
     else if (ev_n < EV_MAX) ev_q[ev_n++] = e;
@@ -133,6 +200,13 @@ extern "C" void menu_event_mouse_pos(float x, float y) { push({EV_POS, 0, 0, x, 
 extern "C" void menu_event_mouse_button(int button, int down) { push({EV_BUTTON, button, down, 0, 0}); }
 extern "C" void menu_event_wheel(float dx, float dy) { push({EV_WHEEL, 0, 0, dx, dy}); }
 extern "C" void menu_event_focus(int focused) { push({EV_FOCUS, focused, 0, 0, 0}); }
+extern "C" void menu_event_text(const char *text) {
+    if (!text) return;
+    Ev e = {};
+    e.type = EV_TEXT;
+    snprintf(e.text, sizeof e.text, "%s", text);
+    push(e);
+}
 
 static void drain_events(ImGuiIO &io) {
     Ev q[EV_MAX];
@@ -149,6 +223,7 @@ static void drain_events(ImGuiIO &io) {
         case EV_BUTTON: io.AddMouseButtonEvent(e.a, e.b != 0); break;
         case EV_WHEEL: io.AddMouseWheelEvent(e.x, e.y); break;
         case EV_FOCUS: io.AddFocusEvent(e.a != 0); break;
+        case EV_TEXT: io.AddInputCharactersUTF8(e.text); break;
         }
     }
 }
@@ -191,6 +266,69 @@ static void pad_events(ImGuiIO &io, int reset) {
         if ((b ^ pad_prev) & m) io.AddKeyEvent(k.key, (b & m) != 0);
     }
     pad_prev = b;
+}
+
+static size_t utf8_units(const char *s, size_t n) {
+    size_t units = 0;
+    for (size_t i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        size_t bytes = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : 4;
+        units += bytes == 4 ? 2 : 1;
+        i += bytes < n - i ? bytes : n - i;
+    }
+    return units;
+}
+
+static int text_entry_filter(ImGuiInputTextCallbackData *data) {
+    const SwkbdRequest *req = (const SwkbdRequest *)data->UserData;
+    uint32_t c = data->EventChar;
+    if (c > 0x10ffff || (c > 0xffff && req->numeric) ||
+        (c <= 0xffff && !swkbd_allowed((uint16_t)c, req->disabled, req->numeric))) return 1;
+    int start = data->SelectionStart < 0 ? 0
+              : data->SelectionStart > data->BufTextLen ? data->BufTextLen : data->SelectionStart;
+    int end = data->SelectionEnd < start ? start
+            : data->SelectionEnd > data->BufTextLen ? data->BufTextLen : data->SelectionEnd;
+    size_t used = utf8_units(data->Buf, (size_t)start) +
+                  utf8_units(data->Buf + end, (size_t)(data->BufTextLen - end));
+    return used + (c > 0xffff ? 2 : 1) > (size_t)req->max_len;
+}
+
+static size_t text_entry_units(const char *text) {
+    uint16_t out[KB_LIMIT * 2];
+    return swkbd_utf8_to_utf16(text, out, sizeof out / sizeof *out);
+}
+
+static void layout_text_entry(uint32_t w, uint32_t h, float scale) {
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 160));
+    float ww = fminf(640 * scale, w * 0.9f), wh = fminf(260 * scale, h * 0.8f);
+    ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(ww, wh), ImGuiCond_Always);
+    ImGui::Begin("##software-keyboard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", ui_text(UI_SWKBD_TITLE));
+    ImGui::TextWrapped("%s", g_text_entry_prompt[0] ? g_text_entry_prompt : ui_text(UI_SWKBD_PROMPT));
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (!g_text_entry_focused) ImGui::SetKeyboardFocusHere();
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_AutoSelectAll |
+                                ImGuiInputTextFlags_EnterReturnsTrue;
+    if (g_text_entry_req.password) flags |= ImGuiInputTextFlags_Password;
+    bool enter = ImGui::InputText("##name", g_text_entry_text, sizeof g_text_entry_text, flags, text_entry_filter,
+                                  &g_text_entry_req);
+    g_text_entry_focused = 1;
+    ImGui::TextDisabled("%s", ui_text(UI_SWKBD_PAD_HINT));
+    ImGui::Spacing();
+    bool can_accept = text_entry_units(g_text_entry_text) >= (size_t)g_text_entry_req.min_len;
+    if (!can_accept) ImGui::BeginDisabled();
+    bool accept = ImGui::Button(ui_text(UI_SWKBD_OK), ImVec2(ww * 0.42f, 0));
+    if (!can_accept) ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool cancel = ImGui::Button(ui_text(UI_SWKBD_CANCEL), ImVec2(ww * 0.42f, 0));
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || cancel)
+        text_entry_finish(0);
+    else if (can_accept && (enter || accept || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)))
+        text_entry_finish(1);
+    ImGui::End();
 }
 
 // ---- ImGui and its Vulkan back end (present path)
@@ -1519,8 +1657,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
     perf_tick(plat_now_ns(), t);
+    bool text_entry = menu_text_entry_active();
     bool open = g_open.load(std::memory_order_relaxed);
-    if (!open) {
+    if (!open && !text_entry) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
         static bool saves_shown;   // TOTK_SAVE_SLOTS: with two saves or more the Saves page greets the title screen once
         if (!saves_shown && frame >= 90 && fs_slots_enabled()) {
@@ -1542,11 +1681,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
+        } else if (!g_perf_mode && !text_entry) {
             return 0;
         }
     }
     if (g_failed_flag()) {
+        text_entry_finish(0);
         set_open(0);
         return 0;
     }
@@ -1556,6 +1696,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
+        text_entry_finish(0);
         set_open(0);
         return 0;
     }
@@ -1579,7 +1720,10 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     double dt = g_last_ns ? (t0 - g_last_ns) / 1e9 : 1 / 60.0;
     io.DeltaTime = (float)(dt < 1e-4 ? 1e-4 : dt > 0.1 ? 0.1 : dt);
     g_last_ns = t0;
-    if (!open) {   // the overlay alone: no input reaches ImGui
+    if (text_entry) {
+        drain_events(io);
+        pad_events(io, reset);
+    } else if (!open) {   // the overlay alone: no input reaches ImGui
     } else if (g_test.page < 0) {
         drain_events(io);
         pad_events(io, reset);
@@ -1590,8 +1734,13 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
-    if (open) layout_menu(t->width, t->height, scale);
-    perf_draw(t, scale);
+    if (text_entry) {
+        perf_draw(t, scale);
+        layout_text_entry(t->width, t->height, scale);
+    } else {
+        if (open) layout_menu(t->width, t->height, scale);
+        perf_draw(t, scale);
+    }
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;

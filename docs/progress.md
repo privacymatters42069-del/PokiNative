@@ -1,5 +1,17 @@
 # Progress
 
+## Restoring the Linux in-game name prompt (2026-11-26)
+
+- The SDL software-keyboard backend previously accepted the game's starting or default text immediately, without displaying a prompt. Replaced that behavior with an ImGui modal drawn in the existing Vulkan present path.
+- Updated [runtime/ui/menu.cpp](../runtime/ui/menu.cpp), [runtime/ui/menu.h](../runtime/ui/menu.h), and [runtime/ui/menu_sdl.cpp](../runtime/ui/menu_sdl.cpp):
+  - The modal shows the game's prompt and initial text, filters forbidden/numeric input, respects UTF-16 length limits, and supports Enter/A to accept and Esc/B to cancel.
+  - SDL text events are queued to the present thread; menu toggles are suppressed while the prompt is active, and game input remains blocked by the existing software-keyboard call path.
+- Updated [runtime/gfx_window_sdl.c](../runtime/gfx_window_sdl.c) and [runtime/swkbd_sdl.c](../runtime/swkbd_sdl.c) to start and stop SDL text input on the SDL window thread and connect Linux `nn::swkbd::ShowKeyboard` requests to the modal. The existing scripted `TOTK_SWKBD_TEST=ok|cancel` path remains available.
+- Updated [runtime/swkbd.h](../runtime/swkbd.h) to give the request type a tag so the menu API can forward-declare it.
+- Verification: `git diff --check` passed. The relevant sections of `tools/check_launcher.py` passed, but the full check stops at its `tools` section because this Mac has Python 3.9.6 (no `tomllib`) and lacks `lz4` and `cryptography`. Local C/C++ syntax checks could not start because this Mac lacks the SDL3 and Vulkan development headers. No game files or keys were accessed.
+- Remaining verification: build the Linux runtime, then test new-game trainer naming on a Linux desktop and Steam Deck, including typed text, A/Enter confirmation, B/Esc cancellation, and the SteamOS on-screen keyboard. The on-screen keyboard behavior still requires a real Steam Deck test.
+- Next: run the Linux build/CI validation, then install the resulting test build and verify the full in-game name-entry flow before treating this as confirmed.
+
 ## Investigating RecompLauncher verified-copy and handheld badges (2026-11-24)
 
 - The RecompLauncher guide defines **Verified Copies** through `inputs[].dumps`, with a verified copy's name and CRC32 (optionally its size). Its guidance is to use known-good dump metadata from Redump or No-Intro. The current [recomplauncher.json](../recomplauncher.json) has no `dumps` entries.

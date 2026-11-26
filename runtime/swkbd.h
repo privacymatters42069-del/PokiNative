@@ -1,5 +1,5 @@
-// nn::swkbd::ShowKeyboard (swkbd.c) and its front end, the window that takes the text (swkbd_win.c with Win32,
-// swkbd_sdl.c with SDL).
+// nn::swkbd::ShowKeyboard (swkbd.c) and its front end, the text-entry UI (swkbd_win.c with Win32,
+// swkbd_sdl.c with SDL and ui/menu.cpp).
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -7,7 +7,7 @@
 #define KB_LIMIT 500   // the applet's longest text
 
 // The request, front-end independent.
-typedef struct {
+typedef struct SwkbdRequest {
     uint16_t prompt[0x101];              // header, else guide, else sub text (UTF-16, NUL-terminated; may be empty)
     uint16_t initial[KB_LIMIT + 1];      // starting text (the game's, else the catalog's default name)
     int game_initial;                    // the starting text is the game's

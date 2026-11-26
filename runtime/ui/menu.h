@@ -1,7 +1,7 @@
-// The in-game menu (ui/menu.cpp, Dear ImGui) and its seams to the platform side: the window and its input (ui/menu_win.cpp
-// on Windows, ui/menu_sdl.cpp with SDL), the gamepad (input_pad_read, input.h) and the present path
-// (gfx_present.c). The menu core calls no window system: events come in through menu_event_*, the drawing happens in the
-// present path's command buffer.
+// The in-game menu and software keyboard (ui/menu.cpp, Dear ImGui) and their seams to the platform side: the window and
+// its input (ui/menu_win.cpp on Windows, ui/menu_sdl.cpp with SDL), the gamepad (input_pad_read, input.h) and the
+// present path (gfx_present.c). The UI core calls no window system: events come in through menu_event_*, the drawing
+// happens in the present path's command buffer.
 //
 // F1 or Esc on the keyboard and Minus and Plus held together (consumed in poll_merged, input_menu_gate in input.h) open it;
 // F1, Esc, B or "Continue" close it. While it is open the game gets no input (input_menu, input.h) and keeps running; the
@@ -14,8 +14,11 @@
 // Threads: the event functions are called by the window thread, menu_toggle by whichever thread polls the pad, the
 // overlay functions by the present path under its lock. ImGui itself runs on the present path only.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
+
+struct SwkbdRequest;
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +42,10 @@ void menu_event_mouse_pos(float x, float y);
 void menu_event_mouse_button(int button, int down);   // 0 left, 1 right, 2 middle
 void menu_event_wheel(float dx, float dy);
 void menu_event_focus(int focused);
+void menu_event_text(const char *text);
+int menu_text_entry_active(void);
+// Blocks the calling guest thread until the player accepts or cancels the software-keyboard request.
+int menu_text_entry_run(const struct SwkbdRequest *req, uint16_t *out, size_t cap, size_t *n);
 
 // ---- the overlay, drawn into the swapchain image after the game image (gfx_present.c, present lock held)
 typedef struct {
