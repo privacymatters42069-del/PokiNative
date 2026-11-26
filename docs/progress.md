@@ -1,5 +1,13 @@
 # Progress
 
+## Avoiding the blocked Microsoft APT mirror in CI (2026-11-26)
+
+- The `0.4.6.6` tag's GitHub Actions run #45867762366 passed content and project tests, then failed at **Install lifter build tools** because the Ubuntu runner received HTTP 403 from its preconfigured `packages.microsoft.com` source. The Windows build, Linux build and draft-release jobs were skipped; no compiler failure was reported.
+- Updated [.github/workflows/build-launchers.yml](../.github/workflows/build-launchers.yml) to restrict both the validation tool installation and Linux AppImage dependency installation to Ubuntu's `/etc/apt/sources.list.d/ubuntu.sources`. Updated [.github/workflows/check.yml](../.github/workflows/check.yml) for the same reason. The workflows still fail normally if Ubuntu's own repositories or package installation fail.
+- The existing `0.4.6.6` tag was not moved. The workflow fix is on `testing`; pushing a branch commit will run the content-check workflow, while the release workflow can also be started manually with `workflow_dispatch` without creating another release tag.
+- Verification pending: parse both workflow files, run the staged content guard, then confirm the push-triggered CI run gets through apt setup and its tests. The release tag itself has not been rerun with the updated workflow.
+- Next: verify the branch CI result. If you need release artifacts, use the workflow's manual build on `testing` or create a release tag only after the Linux game name prompt has passed gameplay testing.
+
 ## Restoring the Linux in-game name prompt (2026-11-26)
 
 - The SDL software-keyboard backend previously accepted the game's starting or default text immediately, without displaying a prompt. Replaced that behavior with an ImGui modal drawn in the existing Vulkan present path.
