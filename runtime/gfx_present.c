@@ -65,6 +65,14 @@ void gfx_window_closed(void) {
     fs_save_flush();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
+    int slot = fs_slot_relaunch_pending();
+    if (slot > 0) {   // the Saves page: the next process loads that slot
+        char v[8];
+        snprintf(v, sizeof v, "%d", slot);
+        plat_setenv("TOTK_SAVE_SLOT", v);
+        if (plat_launch_self()) rt_log("gfx: starting the game again for save slot %d failed", slot);
+        else rt_log("gfx: the game starts again with save slot %d", slot);
+    }
     plat_exit(0);
 }
 

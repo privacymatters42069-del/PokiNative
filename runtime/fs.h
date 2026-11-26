@@ -53,5 +53,16 @@ int fs_save_busy(void);                                    // a save is being wr
 int fs_aoc_indices(int *out, int cap);                     // the player's add-on content indices (game/dlc/<n>)
 int fs_profile_dir(char *out, size_t cap);                 // the profile folder (saves, team.json); 0 before it is set
 void team_on_save(void);                                   // team.c: a save was committed (scans for the party)
+// Save slots (TOTK_SAVE_SLOTS=1, fs_host.c "save slots"): slot 1 is the save as before, 2..FS_SLOTS beside it.
+#define FS_SLOTS 8
+#define FS_SLOT_NAME 48
+typedef struct { int used, active; int64_t saved; char name[FS_SLOT_NAME]; } FsSlotInfo;   // saved: unix s, 0 unknown
+int fs_slots_enabled(void);                                // TOTK_SAVE_SLOTS was on at the first storage use
+int fs_slot_active(void);                                  // the slot this process loads and saves (1 without slots)
+int fs_slot_info(int n, FsSlotInfo *out);                  // 0 when slots are off or n is out of range
+int fs_slot_rename(int n, const char *name);               // 0 on success
+int fs_slot_copy(int n);                                   // this slot's newest save to slot n; 0 on success
+int fs_slot_switch(int n);                                 // load slot n (a new game when empty) after a restart
+int fs_slot_relaunch_pending(void);                        // the slot fs_slot_switch asked for, 0 none
 void fs_save_flush(void);                                  // wait for a save Commit still running in the background;
                                                            // every exit path calls it before the process ends

@@ -212,6 +212,7 @@ _Noreturn void plat_reexec(void);
 // Runs this program again with the same arguments as a child (output passed through), waits, and returns its exit code (a crash: the exception
 // code on Windows, 128 + the signal on Linux; -1 when it cannot start). Environment changes before the call pass on.
 int plat_spawn_self(void);
+int plat_launch_self(void);   // start this program again with the same arguments and environment, not waiting; 0 on success
 
 // A crash in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
 // overflow) goes to fn, which reports it and must end the process. Faults in other modules (drivers) are left to the

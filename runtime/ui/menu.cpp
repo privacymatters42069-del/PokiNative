@@ -37,6 +37,7 @@ static int g_font_bad;
 
 extern "C" {
 #include "cfg.h"
+#include "fs.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -845,9 +846,16 @@ static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GA
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static std::atomic<int> g_tab_wanted{-1};   // menu_open_controls, from another thread
+static std::atomic<int> g_saves_view;   // the Saves page (TOTK_SAVE_SLOTS=1) takes the menu's place
 extern "C" void menu_open_controls(void) {
     if (g_failed_flag()) return;
+    g_saves_view.store(0);
     g_tab_wanted.store(TAB_CONTROLS);
+    set_open(1);
+}
+extern "C" void menu_open_saves(void) {
+    if (g_failed_flag() || !fs_slots_enabled()) return;
+    g_saves_view.store(1);
     set_open(1);
 }
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -891,6 +899,15 @@ static void layout_controls(uint32_t w, uint32_t h, float scale) {
     opt_reserve_bottom(foot + 24 * scale);
     tab_controls(scale);
     opt_game_look(false);
+    if (fs_slots_enabled()) {   // L / R: the Saves page, named on the right of the upper bar
+        char hint[96];
+        snprintf(hint, sizeof hint, "L / R  %s", menu_text(UI_SAVES_OPEN));
+        dl->AddText(ImVec2(fw - 64 * scale - ImGui::CalcTextSize(hint).x, (bar - fs) * 0.5f), white, hint);
+        if (!binds_modal() && !g_modal &&
+            (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ||
+             ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_E, false)))
+            g_saves_view.store(1);
+    }
 
     // the way back, right in the lower bar: the button's sign and the word, both click
     if (!cfg_last_save_ok())   // stays until a save succeeds; the settings hold for the session
@@ -945,9 +962,229 @@ static void layout_controls(uint32_t w, uint32_t h, float scale) {
     ImGui::PopStyleVar(2);
 }
 
+// ---- the Saves page (TOTK_SAVE_SLOTS=1, fs_host.c "save slots"): the eight slots in the look of the Controls page.
+// A row opens its actions: load it or start a new game there (both restart the game), copy the last save there, name
+// it. L / R go back to the Controls page, B closes the menu ("Continue" with the slot in use).
+enum { SA_NONE, SA_LOAD, SA_NEW, SA_COPY };
+static int g_slot_sel = -1;    // the slot whose actions are open
+static int g_slot_ask;         // SA_*: the action waiting for its confirmation
+static char g_slot_msg[160];   // the last copy's result, under the list
+static char g_slot_edit[FS_SLOT_NAME];
+
+static void slot_label(int n, const FsSlotInfo *s, char *out, size_t cap) {
+    char base[64];
+    snprintf(base, sizeof base, menu_text(UI_SAVES_SLOT), n);
+    if (s->name[0]) snprintf(out, cap, "%s - %s", base, s->name);
+    else snprintf(out, cap, "%s", base);
+}
+
+static void slot_detail(const FsSlotInfo *s, char *out, size_t cap) {
+    *out = 0;
+    if (!s->used) {
+        snprintf(out, cap, "%s", menu_text(UI_SAVES_EMPTY));
+        return;
+    }
+    char when[64] = "";
+    if (s->saved > 1) {
+        time_t t = (time_t)s->saved;
+        struct tm tm;
+#ifdef _WIN32
+        if (localtime_s(&tm, &t) == 0) strftime(when, sizeof when, "%Y-%m-%d %H:%M", &tm);
+#else
+        if (localtime_r(&t, &tm)) strftime(when, sizeof when, "%Y-%m-%d %H:%M", &tm);
+#endif
+    }
+    if (*when) snprintf(out, cap, menu_text(UI_SAVES_SAVED), when);
+    if (s->active) {
+        size_t n = strlen(out);
+        snprintf(out + n, cap - n, "%s%s", n ? ",  " : "", menu_text(UI_SAVES_CURRENT));
+    }
+}
+
+static void layout_saves(uint32_t w, uint32_t h, float scale) {
+    const float bar = floorf(84 * scale), foot = floorf(72 * scale), fw = (float)w, fh = (float)h;
+    const ImU32 purple = IM_COL32(122, 40, 176, 255), yellow = IM_COL32(238, 194, 10, 255), white = IM_COL32(255, 255, 255, 255);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(fw, fh), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(64 * scale, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.26f, 1));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.16f, 0.16f, 0.34f, 1));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.16f, 0.69f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.56f, 0.22f, 0.78f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.18f, 0.18f, 0.40f, 1));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.48f, 0.16f, 0.69f, 1));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::Begin("##saves_page", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                              ImGuiWindowFlags_NoSavedSettings);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize();
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(fw, bar), purple);
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(fw, 4 * scale), yellow);
+    dl->AddRectFilled(ImVec2(0, fh - foot), ImVec2(fw, fh), purple);
+    dl->AddRectFilled(ImVec2(0, fh - 4 * scale), ImVec2(fw, fh), yellow);
+    dl->AddText(font, fs * 1.6f, ImVec2(64 * scale, (bar - fs * 1.6f) * 0.5f + 2 * scale), white, menu_text(UI_SAVES_TITLE));
+    {
+        char hint[96];
+        snprintf(hint, sizeof hint, "L / R  %s", menu_text(UI_SAVES_CONTROLS));
+        dl->AddText(ImVec2(fw - 64 * scale - ImGui::CalcTextSize(hint).x, (bar - fs) * 0.5f), white, hint);
+    }
+    ImGui::SetCursorPosY(bar + 24 * scale);
+    ImGui::TextWrapped("%s", menu_text(UI_SAVES_HINT));
+    ImGui::Spacing();
+
+    static bool focus_row = true;
+    if (ImGui::IsWindowAppearing()) focus_row = true;
+    static FsSlotInfo slots[FS_SLOTS + 1];   // read again twice a second and after every action, not every frame
+    static uint64_t slots_read_ns;
+    static int slots_stamp = -1;
+    int active = fs_slot_active();
+    uint64_t now = plat_now_ns();
+    int stamp = g_slot_ask * 100 + g_slot_sel + (int)strlen(g_slot_msg) * 1000;
+    if (ImGui::IsWindowAppearing() || now - slots_read_ns > 500000000ull || stamp != slots_stamp) {
+        for (int n = 1; n <= FS_SLOTS; n++) fs_slot_info(n, &slots[n]);
+        slots_read_ns = now, slots_stamp = stamp;
+    }
+    float row_h = fs * 2.2f;
+    for (int n = 1; n <= FS_SLOTS; n++) {
+        char label[128], detail[128], id[16];
+        slot_label(n, &slots[n], label, sizeof label);
+        slot_detail(&slots[n], detail, sizeof detail);
+        snprintf(id, sizeof id, "##slot%d", n);
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Selectable(id, n == active, 0, ImVec2(0, row_h))) {
+            g_slot_sel = n;
+            g_slot_ask = SA_NONE;
+            snprintf(g_slot_edit, sizeof g_slot_edit, "%s", slots[n].name);
+            ImGui::OpenPopup("##slot_actions");
+        }
+        if (focus_row && n == active) {
+            ImGui::SetItemDefaultFocus();
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+            focus_row = false;
+        }
+        float ty = at.y + (row_h - fs) * 0.5f;
+        dl->AddText(ImVec2(at.x + 16 * scale, ty), slots[n].used ? white : IM_COL32(170, 170, 200, 255), label);
+        dl->AddText(ImVec2(at.x + avail - ImGui::CalcTextSize(detail).x - 16 * scale, ty),
+                    slots[n].active ? yellow : IM_COL32(200, 200, 225, 255), detail);
+    }
+    if (*g_slot_msg) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", g_slot_msg);
+    }
+
+    // a slot's actions, then the confirmation of the one chosen
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    bool modal = false;
+    if (ImGui::BeginPopupModal("##slot_actions", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
+        modal = true;
+        int n = g_slot_sel >= 1 && g_slot_sel <= FS_SLOTS ? g_slot_sel : 1;
+        const FsSlotInfo *s = &slots[n];
+        char name[128];
+        slot_label(n, s, name, sizeof name);
+        const ImGuiStyle &st = ImGui::GetStyle();
+        float bw = fs * 18;
+        bool close = false;
+        static int ask_seen = SA_NONE;   // the confirmation just replaced the actions: Cancel takes the cursor
+        if (g_slot_ask == SA_NONE) {
+            ask_seen = SA_NONE;
+            ImGui::TextUnformatted(name);
+            ImGui::Spacing();
+            bool first = true;
+            auto button = [&](const char *text) {
+                bool hit = ImGui::Button(text, ImVec2(bw, 0));
+                if (first && ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+                first = false;
+                return hit;
+            };
+            if (s->used && !s->active && button(menu_text(UI_SAVES_LOAD))) g_slot_ask = SA_LOAD;
+            if (!s->used && button(menu_text(UI_SAVES_NEW_GAME))) g_slot_ask = SA_NEW;
+            if (!s->active && slots[active].used && button(menu_text(UI_SAVES_COPY))) g_slot_ask = SA_COPY;
+            ImGui::Spacing();
+            ImGui::SetNextItemWidth(bw - ImGui::CalcTextSize(menu_text(UI_SAVES_RENAME)).x - st.ItemInnerSpacing.x);
+            ImGui::InputText(menu_text(UI_SAVES_RENAME), g_slot_edit, sizeof g_slot_edit);
+            if (ImGui::IsItemDeactivatedAfterEdit()) fs_slot_rename(n, g_slot_edit);
+            ImGui::Spacing();
+            if (button(menu_text(UI_SAVES_CANCEL))) close = true;
+        } else {
+            char q[320];
+            UiTextId ask = g_slot_ask == SA_LOAD ? UI_SAVES_LOAD_CONFIRM
+                         : g_slot_ask == SA_NEW  ? UI_SAVES_NEW_CONFIRM
+                         : s->used               ? UI_SAVES_COPY_OVER
+                                                 : UI_SAVES_COPY_CONFIRM;
+            snprintf(q, sizeof q, menu_text(ask), name);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + bw * 1.6f);
+            ImGui::TextUnformatted(q);
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+            const char *no = menu_text(UI_MENU_RESET_NO);
+            const char *yes = g_slot_ask == SA_LOAD ? menu_text(UI_SAVES_LOAD)
+                            : g_slot_ask == SA_NEW  ? menu_text(UI_SAVES_NEW_GAME)
+                                                    : menu_text(UI_SAVES_COPY);
+            float cw = fmaxf(ImGui::CalcTextSize(yes).x, ImGui::CalcTextSize(no).x) + st.FramePadding.x * 4;
+            if (ImGui::Button(no, ImVec2(cw, 0))) close = true;   // Cancel has the cursor first
+            if (ask_seen != g_slot_ask) {
+                ask_seen = g_slot_ask;
+                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                ImGui::SetNavCursorVisible(true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(yes, ImVec2(cw, 0))) {
+                if (g_slot_ask == SA_COPY) {
+                    if (fs_slot_copy(n) == 0) snprintf(g_slot_msg, sizeof g_slot_msg, menu_text(UI_SAVES_COPIED), name);
+                    else snprintf(g_slot_msg, sizeof g_slot_msg, "%s", menu_text(UI_SAVES_COPY_FAILED));
+                } else if (fs_slot_switch(n) == 0) {
+                    gfx_window_request_close();
+                }
+                close = true;
+            }
+        }
+        if (!ImGui::IsAnyItemActive() &&
+            (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+            close = true;
+        if (close) {
+            g_slot_ask = SA_NONE;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // the lower bar: "Continue: Save n" (B) on the right
+    char cont[160], cur[128];
+    slot_label(active, &slots[active], cur, sizeof cur);
+    snprintf(cont, sizeof cont, menu_text(UI_SAVES_CONTINUE), cur);
+    float tw = ImGui::CalcTextSize(cont).x, rad = fs * 0.62f, cy = fh - foot * 0.5f, x = fw - 64 * scale - tw;
+    float cx = x - rad - fs * 0.45f;
+    dl->AddCircleFilled(ImVec2(cx, cy), rad, white);
+    const ImFontGlyph *b = font->FindGlyph('B');
+    float k = fs / font->FontSize, text_y = cy - (b->Y0 + b->Y1) * 0.5f * k;
+    dl->AddText(ImVec2(cx - (b->X0 + b->X1) * 0.5f * k, text_y), purple, "B");
+    dl->AddText(ImVec2(x, text_y), white, cont);
+    ImGui::SetCursorScreenPos(ImVec2(cx - rad, fh - foot));
+    if (ImGui::InvisibleButton("##saves_back", ImVec2(fw - 64 * scale - (cx - rad), foot))) set_open(0);
+    if (!modal) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
+            set_open(0);
+        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ||
+                 ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+            g_saves_view.store(0);
+            g_tab_wanted.store(TAB_CONTROLS);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(9);
+    ImGui::PopStyleVar(2);
+}
+
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
 static void layout_menu(uint32_t w, uint32_t h, float scale) {
+    if (g_saves_view.load() && fs_slots_enabled()) return layout_saves(w, h, scale);
     if (g_locked.load()) return layout_controls(w, h, scale);
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
     float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
@@ -1285,7 +1522,21 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
-        if (g_test.at && !g_test.opened && frame >= g_test.at) {
+        static bool saves_shown;   // TOTK_SAVE_SLOTS: with two saves or more the Saves page greets the title screen once
+        if (!saves_shown && frame >= 90 && fs_slots_enabled()) {
+            saves_shown = true;
+            int used = 0;
+            for (int n = 1; n <= FS_SLOTS; n++) {
+                FsSlotInfo s;
+                used += fs_slot_info(n, &s) && s.used;
+            }
+            if (used >= 2 && !getenv("TOTK_SAVE_SLOT") && !getenv("TOTK_SAVE_SLOTS_QUIET")) {
+                menu_open_saves();
+                open = g_open.load(std::memory_order_relaxed);
+            }
+        }
+        if (open) {
+        } else if (g_test.at && !g_test.opened && frame >= g_test.at) {
             g_test.opened = frame;
             g_test.page = 0;
             g_tab_request = 0;

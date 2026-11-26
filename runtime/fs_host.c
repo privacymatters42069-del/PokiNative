@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "fs.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -95,6 +96,7 @@ static char *join(const char *dir, const char *name) {
 static volatile int32_t save_writers, save_dirty;
 static volatile int64_t save_changed_ns;
 static void save_wait_commit(void);
+static void slot_committed(void);
 static void save_touched(void) {
     save_wait_commit();   // every change to save data comes here first: none lands in a commit's snapshot
     plat_xchg64(&save_changed_ns, (int64_t)plat_now_ns());
@@ -510,6 +512,7 @@ static uint32_t save_commit_locked(void) {
     if (crashed()) return FS_R_INVALID_ARGUMENT;
     int waits = swap_in();
     if (tx_dead) return FS_R_INVALID_ARGUMENT;
+    slot_committed();
     rt_log("fs commit save: %d files, %d changed (%.1f MiB written), %d unchanged linked, in %.0f ms%s", nfiles,
            nfiles - linked, bytes / 1048576.0, linked, (plat_now_ns() - t0) / 1e6, waits ? "; waits in save-tx" : "");
     return 0;
@@ -564,6 +567,226 @@ static uint32_t save_commit(void) {
     return commit_run();
 }
 
+// ---- save slots (TOTK_SAVE_SLOTS=1; off: one save as before)
+// Slot 1 is the save set above, unchanged (save/, save-tx/, save-backup/). Slot n (2..FS_SLOTS) is the same set with
+// "@n" after the save folder's name: save@n/<uid>/, save@n-tx/, save@n-backup/ (with a mod pack save-<pack>@n...), so
+// every slot keeps its own journal, recovery and backups. The save mount is made once, before the title screen, so
+// the slot is chosen at start: TOTK_SAVE_SLOT (set by fs_slot_switch for the process it starts), else the slot saved
+// last ("Continue" loads the newest save). <profile>/slots.ini (slots-<pack>.ini) holds each slot's name and the time
+// of its last commit: "name<n>=..." and "saved<n>=<unix seconds>" lines, written whole and renamed into place.
+static int slots_on, slot_active = 1;
+static char save_base[100];   // the save folder's name for slot 1: "save" or "save-<pack>"
+static char uid_dir[40];      // <uid hi><uid lo>
+static char slot_names[FS_SLOTS + 1][FS_SLOT_NAME];
+static int64_t slot_saved[FS_SLOTS + 1];
+static PlatMutex slot_lock = PLAT_MUTEX_INIT;
+static volatile int32_t slot_relaunch;   // the slot the next process starts in (fs_slot_relaunch_pending)
+
+static void slot_dir_name(int n, char *out, size_t cap) {
+    if (n <= 1) snprintf(out, cap, "%s", save_base);
+    else snprintf(out, cap, "%s@%d", save_base, n);
+}
+
+static void slots_ini_path(char *out, size_t cap) {
+    const char *pack = rt_mod_pack();
+    if (pack) snprintf(out, cap, "%s/slots-%s.ini", profile, pack);
+    else snprintf(out, cap, "%s/slots.ini", profile);
+}
+
+static void slots_load(void) {
+    char path[1200];
+    slots_ini_path(path, sizeof path);
+    PlatFile *f = plat_file_open(path);
+    if (!f) return;
+    char buf[8192];
+    int64_t n = plat_file_pread(f, buf, sizeof buf - 1, 0);
+    plat_file_close(f);
+    if (n <= 0) return;
+    buf[n] = 0;
+    for (char *line = strtok(buf, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+        int k = 0, used = 0;
+        if (sscanf(line, "name%d=%n", &k, &used) == 1 && used && k >= 1 && k <= FS_SLOTS)
+            snprintf(slot_names[k], FS_SLOT_NAME, "%s", line + used);
+        else if (sscanf(line, "saved%d=%n", &k, &used) == 1 && used && k >= 1 && k <= FS_SLOTS)
+            slot_saved[k] = strtoll(line + used, NULL, 10);
+    }
+}
+
+// slot_lock held. 0 on success.
+static int slots_write(void) {
+    char path[1200], buf[8192];
+    int len = 0;
+    for (int k = 1; k <= FS_SLOTS; k++) {
+        if (slot_names[k][0]) len += snprintf(buf + len, sizeof buf - len, "name%d=%s\n", k, slot_names[k]);
+        if (slot_saved[k]) len += snprintf(buf + len, sizeof buf - len, "saved%d=%lld\n", k, (long long)slot_saved[k]);
+    }
+    slots_ini_path(path, sizeof path);
+    // temp file, flush, then replace: the old slots.ini stays whole until the new one is on disk
+    if (!plat_file_write_atomic(path, buf, (size_t)len)) {
+        rt_log("fs: save slots: cannot write %s", path);
+        return -1;
+    }
+    return 0;
+}
+
+// The committed save folder of slot n and its journal folder.
+static void slot_paths(int n, char *save, size_t scap, char *tx, size_t tcap) {
+    char d[120];
+    slot_dir_name(n, d, sizeof d);
+    if (save) snprintf(save, scap, "%s/%s/%s", profile, d, uid_dir);
+    if (tx) snprintf(tx, tcap, "%s/%s-tx", profile, d);
+}
+
+static int dir_has_files(const char *dir) {
+    Listing l;
+    if (!exists(dir) || list_dir(dir, &l)) return 0;
+    int any = l.n > 0;
+    listing_free(l.e, l.n);
+    return any;
+}
+
+// Slot n holds a save: its committed save folder or a finished commit in its journal has files.
+static int slot_used(int n) {
+    char save[1200], tx[1200];
+    slot_paths(n, save, sizeof save, tx, sizeof tx);
+    if (dir_has_files(save)) return 1;
+    Listing l;
+    if (!exists(tx) || list_dir(tx, &l)) return 0;
+    int any = 0;
+    for (int i = 0; i < l.n && !any; i++)
+        if (l.e[i].kind == PLAT_FS_DIR && ready_number(l.e[i].name)) {
+            char *p = join(tx, l.e[i].name);
+            any = p && dir_has_files(p);
+            free(p);
+        }
+    listing_free(l.e, l.n);
+    return any;
+}
+
+// At start: the slot this process uses.
+static int slots_choose(void) {
+    const char *env = getenv("TOTK_SAVE_SLOT");
+    int want = env && *env ? atoi(env) : 0;
+    if (want >= 1 && want <= FS_SLOTS) {
+        rt_log("host save slots: slot %d (TOTK_SAVE_SLOT)", want);
+        return want;
+    }
+    int best = 1;
+    int64_t best_t = -1;
+    for (int k = 1; k <= FS_SLOTS; k++) {
+        if (!slot_used(k)) continue;
+        int64_t t = slot_saved[k] ? slot_saved[k] : (k == 1 ? 1 : 0);   // slot 1's save from before slots: oldest
+        if (t > best_t) best = k, best_t = t;
+    }
+    rt_log("host save slots: slot %d (the newest save)", best);
+    return best;
+}
+
+int fs_slots_enabled(void) { return slots_on; }
+int fs_slot_active(void) { return slot_active; }
+
+int fs_slot_info(int n, FsSlotInfo *out) {
+    memset(out, 0, sizeof *out);
+    if (!slots_on || n < 1 || n > FS_SLOTS || !plat_cas32(&storage_ready, 0, 0)) return 0;
+    plat_mutex_lock(&slot_lock);
+    out->used = slot_used(n);
+    out->saved = slot_saved[n];
+    out->active = n == slot_active;
+    snprintf(out->name, sizeof out->name, "%s", slot_names[n]);
+    plat_mutex_unlock(&slot_lock);
+    return 1;
+}
+
+int fs_slot_rename(int n, const char *name) {
+    if (!slots_on || n < 1 || n > FS_SLOTS) return -1;
+    plat_mutex_lock(&slot_lock);
+    char clean[FS_SLOT_NAME];
+    int j = 0;
+    for (const char *p = name ? name : ""; *p && j < FS_SLOT_NAME - 1; p++)
+        if ((unsigned char)*p >= 0x20 && *p != '=') clean[j++] = *p;   // one line, no '=' (the file's syntax)
+    clean[j] = 0;
+    snprintf(slot_names[n], FS_SLOT_NAME, "%s", clean);
+    int r = slots_write();
+    plat_mutex_unlock(&slot_lock);
+    rt_log("host save slots: slot %d named \"%s\"", n, clean);
+    return r;
+}
+
+// The newest save of this slot becomes slot n's newest save: copied into slot n's journal as new, then renamed to a
+// ready-<k> above any there, which is a finished commit of slot n; that slot's next start swaps it in (save_recover)
+// and moves the save it replaces to its own backups. 0 on success.
+int fs_slot_copy(int n) {
+    if (!slots_on || n < 1 || n > FS_SLOTS || n == slot_active) return -1;
+    fs_save_flush();
+    plat_mutex_lock(&tx_lock);
+    const char *src = newest_save();
+    char tx[1200], dst_new[1220], ready[1240];
+    slot_paths(n, NULL, 0, tx, sizeof tx);
+    int r = -1;
+    if (!dir_has_files(src)) {
+        rt_log("fs: save slots: no save in slot %d to copy", slot_active);
+        goto out;
+    }
+    make_dirs(tx);
+    {
+        char d[120], save_parent[1200], backup[1200];
+        slot_dir_name(n, d, sizeof d);
+        snprintf(save_parent, sizeof save_parent, "%s/%s", profile, d);
+        snprintf(backup, sizeof backup, "%s/%s-backup", profile, d);
+        make_dirs(save_parent);
+        make_dirs(backup);
+    }
+    snprintf(dst_new, sizeof dst_new, "%s/new", tx);
+    unsigned top = 0;
+    Listing l;
+    if (!list_dir(tx, &l)) {
+        for (int i = 0; i < l.n; i++)
+            if (l.e[i].kind == PLAT_FS_DIR && ready_number(l.e[i].name) > top) top = ready_number(l.e[i].name);
+        listing_free(l.e, l.n);
+    }
+    snprintf(ready, sizeof ready, "%s/ready-%010u", tx, top + 1);
+    int nfiles = 0, linked = 0;
+    uint64_t bytes = 0;
+    if (remove_tree(dst_new) || copy_tree(src, dst_new, NULL, 1, &nfiles, &linked, &bytes) ||
+        move_dir(dst_new, ready, STAGING_TRIES)) {
+        remove_tree(dst_new);
+        rt_log("fs: save slots: copying slot %d to slot %d failed; slot %d is unchanged", slot_active, n, n);
+        goto out;
+    }
+    plat_mutex_lock(&slot_lock);
+    slot_saved[n] = (int64_t)(plat_unix_time_ns() / 1000000000ull);
+    if (!slot_names[n][0] && slot_names[slot_active][0])
+        snprintf(slot_names[n], FS_SLOT_NAME, "%s", slot_names[slot_active]);
+    slots_write();
+    plat_mutex_unlock(&slot_lock);
+    rt_log("host save slots: slot %d copied to slot %d (%d files, %.1f MiB)", slot_active, n, nfiles,
+           bytes / 1048576.0);
+    r = 0;
+out:
+    plat_mutex_unlock(&tx_lock);
+    return r;
+}
+
+// Load slot n (or start a new game there, when it is empty): the window closes as on "Quit game", and once the save
+// Commit still running is done (gfx_window_closed) the next process starts with TOTK_SAVE_SLOT=n.
+int fs_slot_switch(int n) {
+    if (!slots_on || n < 1 || n > FS_SLOTS) return -1;
+    plat_xchg32(&slot_relaunch, n);
+    rt_log("host save slots: switching to slot %d (%s)", n, slot_used(n) ? "its save" : "empty: a new game");
+    return 0;
+}
+
+int fs_slot_relaunch_pending(void) { return plat_cas32(&slot_relaunch, 0, 0); }
+
+// A finished commit of the slot in use: its time goes to slots.ini.
+static void slot_committed(void) {
+    if (!slots_on) return;
+    plat_mutex_lock(&slot_lock);
+    slot_saved[slot_active] = (int64_t)(plat_unix_time_ns() / 1000000000ull);
+    slots_write();
+    plat_mutex_unlock(&slot_lock);
+}
+
 // ---- storage roots
 static void storage_init(void *param) {
     (void)param;
@@ -575,8 +798,15 @@ static void storage_init(void *param) {
     account_uid(uid);
     // A mod pack (TOTK_MOD_PACK, romfs.c) keeps its saves apart: save-<name>, save-<name>-tx, save-<name>-backup
     const char *pack = rt_mod_pack();
-    char save_dir[100];
-    snprintf(save_dir, sizeof save_dir, pack ? "save-%s" : "save", pack);
+    char save_dir[120];
+    snprintf(save_base, sizeof save_base, pack ? "save-%s" : "save", pack);
+    snprintf(uid_dir, sizeof uid_dir, "%016llx%016llx", (unsigned long long)uid[1], (unsigned long long)uid[0]);
+    slots_on = cfg_bool("TOTK_SAVE_SLOTS");
+    if (slots_on) {
+        slots_load();
+        slot_active = slots_choose();
+    }
+    slot_dir_name(slot_active, save_dir, sizeof save_dir);
     snprintf(p, sizeof p, "%s/%s", profile, save_dir);
     make_dirs(p);
     need(snprintf(save_root, sizeof save_root, "%s/%s/%016llx%016llx", profile, save_dir, (unsigned long long)uid[1],

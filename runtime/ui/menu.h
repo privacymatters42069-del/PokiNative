@@ -28,6 +28,7 @@ void menu_lock(void);                     // menu_toggle no longer opens the men
                                           // the PC settings page in the game's options has taken over (lua_mod.c);
                                           // TOTK_MENU_LOCK=0 keeps the whole menu. Esc still releases the cursor.
 void menu_open_controls(void);            // opens the Controls page, locked or not: the PC settings page's "Controls"
+void menu_open_saves(void);               // opens the Saves page (TOTK_SAVE_SLOTS=1)
                                           // row (lua_mod.c open_controls)
 void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
 

@@ -761,6 +761,24 @@ int plat_spawn_self(void) {
     return (int)code;
 }
 
+int plat_launch_self(void) {
+    fflush(stdout);
+    fflush(stderr);
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    wchar_t *cmd = _wcsdup(GetCommandLineW());
+    if (!cmd) return -1;
+    // Out of the job this process may run in (a launcher's, which can end the whole job when it exits); a job that
+    // allows no breakaway refuses the flag, and the process then starts inside it
+    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi) ||
+              CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(cmd);
+    if (!ok) return -1;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
+
 int plat_mem_read(uint64_t addr, void *out, size_t n) {
     SIZE_T got = 0;
     return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)addr, out, n, &got) && got == n;
