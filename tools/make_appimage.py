@@ -222,8 +222,9 @@ def main():
     for name in ('libSDL3.so', 'libSDL3.so.0'):
         shutil.copy2(ROOT / 'toolchain' / 'linux' / 'lib' / name, publish / name)
     manifest = json.loads((ROOT / 'recomplauncher.json').read_text(encoding='utf-8'))
-    # Save locations are actual folders, not fallbacks: the Linux launcher builds directly under {install}.
-    manifest['saves'] = ['{install}/build/profile/save']
+    # The Linux launcher builds directly under {install} (launcher-linux/Services.cs Profile), so the Windows entries
+    # under {install}/KarPur never exist here: keep only the Linux save folders (save and save-tx).
+    manifest['saves'] = [s for s in manifest['saves'] if not s.startswith('{install}/KarPur/')]
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'
     (publish / 'recomplauncher.json').write_text(manifest_text, encoding='utf-8')
     (appdir / 'recomplauncher.json').write_text(manifest_text, encoding='utf-8')
