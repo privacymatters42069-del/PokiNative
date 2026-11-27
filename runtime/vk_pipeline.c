@@ -3245,6 +3245,19 @@ int vk_pipeline_warm_shaders(void) {
 
 // ---- dynamic state
 
+static int dynamic_blend_values(const VkPipeState *s, VkBool32 en[8], VkColorBlendEquationEXT eq[8],
+                                VkColorComponentFlags wm[8]) {
+    int n = target_count(s);
+    for (int i = 0; i < n; i++) {
+        const blend_st *b = &s->blend[i];
+        en[i] = (s->color.blend_en >> i & 1) && blendable(target_format(s->color_fmt[i], NULL, NULL));
+        eq[i] = (VkColorBlendEquationEXT){blend_factor(b->src_rgb), blend_factor(b->dst_rgb), blend_op(b->eq_rgb),
+                                          blend_factor(b->src_a), blend_factor(b->dst_a), blend_op(b->eq_a)};
+        wm[i] = target_wmask(s, i);
+    }
+    return n;
+}
+
 void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (!ensure_init()) return;
     const poly_st *pl = &s->poly;
@@ -3277,21 +3290,93 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (P.dyn_clamp) rec_bool(P.set_clamp, cb, s->depth_clamp != 0);
     if (P.dyn_poly) rec_polygon_mode(P.set_poly, cb, polygon_mode(pl->mode));
     if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, s->ms.a2c != 0);   // the same signature
-    int n = target_count(s);
-    if (!n) return;
     VkBool32 en[8];
     VkColorBlendEquationEXT eq[8];
     VkColorComponentFlags wm[8];
-    for (int i = 0; i < n; i++) {
-        const blend_st *b = &s->blend[i];
-        en[i] = (s->color.blend_en >> i & 1) && blendable(target_format(s->color_fmt[i], NULL, NULL));
-        eq[i] = (VkColorBlendEquationEXT){blend_factor(b->src_rgb), blend_factor(b->dst_rgb), blend_op(b->eq_rgb),
-                                          blend_factor(b->src_a), blend_factor(b->dst_a), blend_op(b->eq_a)};
-        wm[i] = target_wmask(s, i);
-    }
+    int n = dynamic_blend_values(s, en, eq, wm);
+    if (!n) return;
     if (P.dyn_blend_en) rec_blend_enable(P.set_blend_en, cb, 0, (uint32_t)n, en);
     if (P.dyn_blend_eq) rec_blend_equation(P.set_blend_eq, cb, 0, (uint32_t)n, eq);
     if (P.dyn_wmask) rec_write_mask(P.set_wmask, cb, 0, (uint32_t)n, wm);
+}
+
+// Adapted from TeraRecomp v0.5.1 (MIT, 0ad1890); dynamic values survive graphics-pipeline binds.
+// The caller supplies the previous state from this command buffer.
+uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s, const VkPipeState *previous,
+                                       uint32_t *saved) {
+    if (saved) *saved = 0;
+    if (!ensure_init() || !previous || !saved) return 0;
+
+    uint32_t commands = 0;
+    const poly_st *pl = &s->poly, *old_pl = &previous->poly;
+    const ds_st *d = &s->ds, *old_d = &previous->ds;
+    int front_cw = pl->front == NVN_FRONT_FACE_CW;
+    int old_front_cw = old_pl->front == NVN_FRONT_FACE_CW;
+    if ((pl->cull & 3) != (old_pl->cull & 3)) vkCmdSetCullMode(cb, (VkCullModeFlags)(pl->cull & 3)), commands++;
+    if (front_cw != old_front_cw)
+        vkCmdSetFrontFace(cb, front_cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE), commands++;
+    if (vk_pipeline_topology(s->prim) != vk_pipeline_topology(previous->prim))
+        vkCmdSetPrimitiveTopology(cb, vk_pipeline_topology(s->prim)), commands++;
+    if (d->dt != old_d->dt) vkCmdSetDepthTestEnable(cb, d->dt), commands++;
+    if (d->dw != old_d->dw) vkCmdSetDepthWriteEnable(cb, d->dw), commands++;
+    if (compare_op(d->df) != compare_op(old_d->df)) vkCmdSetDepthCompareOp(cb, compare_op(d->df)), commands++;
+    if (d->st != old_d->st) vkCmdSetStencilTestEnable(cb, d->st), commands++;
+    if (d->fail_f != old_d->fail_f || d->zpass_f != old_d->zpass_f || d->zfail_f != old_d->zfail_f ||
+        d->sf_f != old_d->sf_f) {
+        vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_BIT, stencil_op(d->fail_f), stencil_op(d->zpass_f),
+                          stencil_op(d->zfail_f), compare_op(d->sf_f));
+        commands++;
+    }
+    if (d->fail_b != old_d->fail_b || d->zpass_b != old_d->zpass_b || d->zfail_b != old_d->zfail_b ||
+        d->sf_b != old_d->sf_b) {
+        vkCmdSetStencilOp(cb, VK_STENCIL_FACE_BACK_BIT, stencil_op(d->fail_b), stencil_op(d->zpass_b),
+                          stencil_op(d->zfail_b), compare_op(d->sf_b));
+        commands++;
+    }
+    unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
+    unsigned old_mode = old_pl->mode <= NVN_POLYGON_MODE_FILL ? old_pl->mode : NVN_POLYGON_MODE_FILL;
+    int depth_bias = (pl->offset_en >> mode & 1) != 0;
+    int old_depth_bias = (old_pl->offset_en >> old_mode & 1) != 0;
+    if (depth_bias != old_depth_bias) vkCmdSetDepthBiasEnable(cb, depth_bias), commands++;
+    if ((s->raster_discard != 0) != (previous->raster_discard != 0))
+        vkCmdSetRasterizerDiscardEnable(cb, s->raster_discard != 0), commands++;
+    if ((s->prim_restart != 0) != (previous->prim_restart != 0))
+        vkCmdSetPrimitiveRestartEnable(cb, s->prim_restart != 0), commands++;
+    if (P.dyn_vi && s->vs && (s->vs != previous->vs || memcmp(s->vattr, previous->vattr, sizeof s->vattr) ||
+                              memcmp(s->vstream, previous->vstream, sizeof s->vstream))) {
+        VtxInput v;
+        vertex_input(s, &v);
+        rec_vertex_input(P.set_vi, cb, v.n_bind, v.b, v.n_attr, v.a);
+        commands++;
+    }
+    if (P.dyn_clamp && ((s->depth_clamp != 0) != (previous->depth_clamp != 0)))
+        rec_bool(P.set_clamp, cb, s->depth_clamp != 0), commands++;
+    if (P.dyn_poly && polygon_mode(pl->mode) != polygon_mode(old_pl->mode))
+        rec_polygon_mode(P.set_poly, cb, polygon_mode(pl->mode)), commands++;
+    if (P.dyn_a2c && ((s->ms.a2c != 0) != (previous->ms.a2c != 0)))
+        rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, s->ms.a2c != 0), commands++;
+
+    VkBool32 en[8], old_en[8];
+    VkColorBlendEquationEXT eq[8], old_eq[8];
+    VkColorComponentFlags wm[8], old_wm[8];
+    int n = dynamic_blend_values(s, en, eq, wm);
+    int old_n = target_count(previous);
+    int all = n > old_n;
+    if (n) {
+        if (!all) dynamic_blend_values(previous, old_en, old_eq, old_wm);
+        if (P.dyn_blend_en && (all || memcmp(en, old_en, (size_t)n * sizeof *en)))
+            rec_blend_enable(P.set_blend_en, cb, 0, (uint32_t)n, en), commands++;
+        if (P.dyn_blend_eq && (all || memcmp(eq, old_eq, (size_t)n * sizeof *eq)))
+            rec_blend_equation(P.set_blend_eq, cb, 0, (uint32_t)n, eq), commands++;
+        if (P.dyn_wmask && (all || memcmp(wm, old_wm, (size_t)n * sizeof *wm)))
+            rec_write_mask(P.set_wmask, cb, 0, (uint32_t)n, wm), commands++;
+    }
+
+    // The full setter records twelve base commands, plus supported extensions and nonempty colour groups.
+    uint32_t full = 12 + (P.dyn_vi && s->vs != NULL) + P.dyn_clamp + P.dyn_poly + P.dyn_a2c;
+    if (n) full += P.dyn_blend_en + P.dyn_blend_eq + P.dyn_wmask;
+    *saved = full - commands;
+    return commands;
 }
 
 // ---- statistics, persistence, teardown

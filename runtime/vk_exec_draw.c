@@ -3128,8 +3128,24 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), skip_note(SK_PIPE_FAIL);
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     if (!B.st_valid || memcmp(&B.st, &s, sizeof s)) {
-        vk_pipeline_set_dynamic(ex->cb, &s);
-        ex->recorded++;
+        if (cfg_bool("TOTK_DYN_DELTA") && B.st_valid) {
+            uint32_t saved = 0;
+            uint32_t commands = vk_pipeline_set_dynamic_delta(ex->cb, &s, &B.st, &saved);
+            ex->recorded += commands != 0;
+            if (rt_trace & RT_TRACE_PERF) {
+                static uint64_t calls, skipped;
+                calls++;
+                skipped += saved;
+                if (calls >= 10000) {
+                    rt_log("perf: dynamic state delta: %llu state updates, %llu redundant Vulkan commands skipped",
+                           (unsigned long long)calls, (unsigned long long)skipped);
+                    calls = skipped = 0;
+                }
+            }
+        } else {
+            vk_pipeline_set_dynamic(ex->cb, &s);
+            ex->recorded++;
+        }
         B.st = s, B.st_valid = 1;
     }
     if (skip_raster) {   // TOTK_SKIP_MODE=raster: vertex work only; the next draw sets the dynamic state again
