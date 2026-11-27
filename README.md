@@ -9,7 +9,7 @@
 
 **Quick start:** Use your own XCI, the 4.0.0 update, and `prod.keys`; build with PokiNative's launcher or RecompLauncher. RecompLauncher accepts XCI base games only because it cannot request the firmware folder needed by an NSP base game.
 
-[Download the launcher](https://github.com/privacymatters42069-del/PokiNative/releases) · [0.4.6.5 release notes](docs/releases/0.4.6.5.md) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
+[Download the launcher](https://github.com/privacymatters42069-del/PokiNative/releases) · [0.4.6.6 release notes](docs/releases/0.4.6.6.md) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
 
 <a href="https://recomplauncher.com/game/pokinative"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a> [![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recomplauncher.com/dev/privacymatters42069-del)
 
@@ -169,7 +169,7 @@ in the data your own copy of the game already contains; PokiNative adds none.
 
 ## Getting started
 
-1. **Download** `KarPur-Launcher-Windows-x86_x64.exe` for Windows or `PokiNative-0.4.6.5-linux-x86_64.AppImage` for Linux from the [releases page](https://github.com/privacymatters42069-del/PokiNative/releases). Windows may warn that the file is unknown, because it is not signed: choose *More info* → *Run anyway*. Linux instructions are in the [AppImage guide](docs/launcher-linux.md).
+1. **Download** `KarPur-Launcher-Windows-x86_x64.exe` for Windows or `PokiNative-0.4.6.6-linux-x86_64.AppImage` for Linux from the [releases page](https://github.com/privacymatters42069-del/PokiNative/releases). Windows may warn that the file is unknown, because it is not signed: choose *More info* → *Run anyway*. Linux instructions are in the [AppImage guide](docs/launcher-linux.md).
 2. **Choose your files** in the *Setup* tab:
    - the base game (`.xci`, or an eShop `.nsp` together with a *Firmware folder*)
    - the update and DLC (`.nsp`)
