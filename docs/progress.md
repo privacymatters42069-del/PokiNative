@@ -1,12 +1,21 @@
 # Progress
 
+## Investigating Linux name entry and Steam Deck keyboard (2026-11-26)
+
+- The maintainer supplied the log from `/home/deck/Downloads/pokinative-files/build/game/logs/karpur.log`. It says `swkbd: no text entry window on this host yet: the default name is taken`, then records the prompt `What is your name?` and the default answer `Horse`. This proves that the executable which wrote this log took the old fallback path and did not open a prompt.
+- That fallback was removed in commit `4a07d33` and is absent from both the current `testing` source and tag `0.4.6.6` (`c1839c3`); Linux now routes the request to the ImGui text-entry modal in [menu.cpp](../runtime/ui/menu.cpp). The log therefore came from a pre-fix game executable, or from a run before the updated game was rebuilt. A launcher version label alone does not establish which runtime binary produced a log.
+- GitHub Actions run [45869166998](https://github.com/privacymatters42069-del/PokiNative/actions/runs/45869166998) succeeded for validation, Windows, Linux AppImage, and draft-release creation. The AppImage build does not verify in-game name entry; actual gameplay with a runtime built from the tagged source is still unverified.
+- The Linux launcher extracts source files from its bundled `payload.zip` before each build and runs `setup_build.py`, which rebuilds when `runtime/**/*` changes. Since the updated AppImage is attached to the `0.4.6.6` **draft** release, an older AppImage can rebuild its own older prompt code; draft releases are not offered by the launcher's public-release updater.
+- The Linux backend calls `SDL_StartTextInput` on the SDL window thread ([gfx_window_sdl.c](../runtime/gfx_window_sdl.c)). SDL text input does not guarantee that SteamOS opens its on-screen keyboard; the ImGui prompt should still appear and accept input without it.
+- The official Steamworks route is `ISteamUtils::ShowGamepadTextInput`, but `SteamAPI_Init` requires a Steam App ID and a valid Steam license. The maintainer confirms this app is only a non-Steam shortcut, and this public repository does not include the proprietary Steamworks runtime. Do not add a Steamworks call that cannot initialize in this setup or bundle that library.
+- Next: use the Linux AppImage attached to the `0.4.6.6` draft release, select the existing `/home/deck/Downloads/pokinative-files` installation in Setup, and run Install / update / repair. Then launch the game and confirm that the old fallback log line is gone and the ImGui name prompt appears. Do not delete the installation folder or saves.
+
 ## Avoiding the blocked Microsoft APT mirror in CI (2026-11-26)
 
 - The `0.4.6.6` tag's GitHub Actions run #45867762366 passed content and project tests, then failed at **Install lifter build tools** because the Ubuntu runner received HTTP 403 from its preconfigured `packages.microsoft.com` source. The Windows build, Linux build and draft-release jobs were skipped; no compiler failure was reported.
 - Updated [.github/workflows/build-launchers.yml](../.github/workflows/build-launchers.yml) to restrict both the validation tool installation and Linux AppImage dependency installation to Ubuntu's `/etc/apt/sources.list.d/ubuntu.sources`. Updated [.github/workflows/check.yml](../.github/workflows/check.yml) for the same reason. The workflows still fail normally if Ubuntu's own repositories or package installation fail.
-- The existing `0.4.6.6` tag was not moved. The workflow fix is on `testing`; pushing a branch commit will run the content-check workflow, while the release workflow can also be started manually with `workflow_dispatch` without creating another release tag.
-- Verification pending: parse both workflow files, run the staged content guard, then confirm the push-triggered CI run gets through apt setup and its tests. The release tag itself has not been rerun with the updated workflow.
-- Next: verify the branch CI result. If you need release artifacts, use the workflow's manual build on `testing` or create a release tag only after the Linux game name prompt has passed gameplay testing.
+- The `0.4.6.6` tag was deleted and recreated at `c1839c3` after the workflow fix. GitHub Actions run [45869166998](https://github.com/privacymatters42069-del/PokiNative/actions/runs/45869166998) succeeded for validation, Windows, Linux AppImage, and draft-release creation. The AppImage build does not verify in-game name entry; gameplay with the updated runtime remains unverified.
+- The Linux game name prompt from `4a07d33` in [swkbd_sdl.c](../runtime/swkbd_sdl.c) is included in this tag. The draft release still needs the maintainer's release checks and actual Deck gameplay verification before publication.
 
 ## Restoring the Linux in-game name prompt (2026-11-26)
 
