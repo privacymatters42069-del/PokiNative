@@ -36,7 +36,7 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "ALIAS_LOG", "ANISO", "AUDIO_CENSUS", "AUDIO_QUEUE_MAX_MS", "BARRIER_TRACK", "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CORE_LAZY", "COVERAGE", "CRIT", "CRIT_OUT", "DATA_FIND", "DATA_PATCH_LIST", "DATA_WATCH", "DATA_WATCH_LIST", "DEPTH_ONLY", "DESC_TEMPLATE", "DEVICE_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYNRES_FULL",
+    "ALIAS_LOG", "ANISO", "AUDIO_CENSUS", "AUDIO_QUEUE_MAX_MS", "BARRIER_TRACK", "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CORE_LAZY", "COVERAGE", "CRIT", "CRIT_OUT", "DATA_FIND", "DATA_PATCH_LIST", "DATA_WATCH", "DATA_WATCH_LIST", "DEPTH_ONLY", "DESC_TEMPLATE", "DEVICE_PROFILE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DYN_DELTA", "DYNRES_FULL",
     "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_DT_NS", "FPS_DT_SNAP", "FPS_LIMIT", "FREEZE_IDLE", "FREE_CORES", "FULLSCREEN", "GAME_BARRIER", "GPL", "HOT_BIND_MAX", "HOT_COOL", "HOT_EXACT", "HOT_KB", "HOT_LATE_SUBS", "HOT_SAFE", "HOT_REFRESH", "GPL_DRAW_BUILD", "GPU",
     "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "HOSTCALLS", "IND_BASE", "INDOOR_FIX", "INPUT", "INTERVAL_ONE", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD", "LUA_MOD", "LUA_MOD_FILE", "LUA_PRELUDE",
@@ -74,7 +74,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_RIGHT", "input"}, {"BIND_DOWN", "input"}, {"BIND_LSTICK_LEFT", "input"}, {"BIND_LSTICK_UP", "input"},
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"},
-    {"READBACK_GUARD", "performance"}, {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"},
+    {"READBACK_GUARD", "performance"}, {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"DYN_DELTA", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
@@ -151,7 +151,7 @@ static const CfgMeta metas[] = {
     {"PUSH_SKIP", "1", "0|1", RESTART}, {"SPLIT_DRAWS", "64", "0..1000", RESTART},
     {"SPLIT_US", "1000", "0..20000", RESTART},
     // Vulkan
-    {"VK_VALIDATION", "0", "0|1", RESTART}, {"VK_DYN_VERTEX", "", "0|1", RESTART},
+    {"VK_VALIDATION", "0", "0|1", RESTART}, {"DYN_DELTA", "0", "0|1", LIVE}, {"VK_DYN_VERTEX", "", "0|1", RESTART},
     {"VK_DYN_A2C", "", "0|1", RESTART}, {"VK_SUBGROUP_PIN", "1", "0|1", RESTART},
     // diagnostics
     {"TRACE", "", NULL, RESTART}, {"FLIGHT", "0", "0|1", RESTART}, {"FLIGHT_SPIKE_MS", "100", "0..60000", RESTART},

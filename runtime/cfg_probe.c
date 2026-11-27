@@ -32,11 +32,13 @@ int probe_cfg(void) {
         "lang =\r\n"
         "trace = a\r\n"
         "trace = b\r\n"
+        "dyn_delta = 1\r\n"
         "no_such_setting = 1\r\n"
         "no equals sign\r\n"
         "last = no newline at the end";
     plat_setenv("TOTK_LOCALE", NULL);
     plat_setenv("TOTK_FPS60", NULL);
+    plat_setenv("TOTK_DYN_DELTA", NULL);
     CHECK(plat_file_write(path, ini, sizeof ini - 1), "write the probe ini");
     CHECK(cfg_load(path) == 1, "load the probe ini");
     CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
@@ -45,6 +47,7 @@ int probe_cfg(void) {
     CHECK(EQ(cfg_get("TOTK_LOCALE"), "de-DE"), "TOTK_ prefix accepted in the file");
     CHECK(cfg_get("TOTK_LANG") == NULL, "empty value is unset");
     CHECK(EQ(cfg_get("TOTK_TRACE"), "b"), "later line wins");
+    CHECK(cfg_bool("TOTK_DYN_DELTA"), "dynamic-state delta is configurable");
     CHECK(cfg_get("TOTK_CLOTH_REALTIME") == NULL, "absent key is NULL");
     CHECK(cfg_get("TOTK_comment") == NULL, "comment is not a key");
     CHECK(EQ(cfg_get("TOTK_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
@@ -55,6 +58,7 @@ int probe_cfg(void) {
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
     CHECK(cfg_get("TOTK_FPS60") == NULL, "missing file leaves no keys");
+    CHECK(!cfg_bool("TOTK_DYN_DELTA"), "dynamic-state delta defaults off");
 
     // cfg_set / cfg_save: only changed lines move, comments stay, a missing key goes under its section
     static const char before[] =

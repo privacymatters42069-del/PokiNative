@@ -8,7 +8,7 @@
     <AssemblyTitle>PokiNative Launcher</AssemblyTitle>
     <Product>PokiNative Launcher</Product>
     <RootNamespace>KarPurLinux</RootNamespace>
-    <Version>0.4.6.6</Version>
+    <Version>0.4.6.7</Version>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
     <InvariantGlobalization>false</InvariantGlobalization>
