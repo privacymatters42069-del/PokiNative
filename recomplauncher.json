@@ -66,7 +66,10 @@
     }
   ],
   "saves": [
-    "{install}/../KarPur/build/profile/save"
+    "{install}/KarPur/build/profile/save",
+    "{install}/KarPur/build/profile/save-tx",
+    "{install}/build/profile/save",
+    "{install}/build/profile/save-tx"
   ],
   "folders": {
     "logs": [
