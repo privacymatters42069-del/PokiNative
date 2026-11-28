@@ -257,6 +257,11 @@ Graphics includes the game resolution, scaling, DLAA / DLSS, FSR 2, frame genera
 includes population and model detail, game mode, performance compatibility options, volume and menu language. Advanced
 keeps the lower-level Vulkan and troubleshooting options. Rows that need a restart are marked in the menu. Logs shows
 the game log folder and can open it in Windows while the game is running.
+The line under the tabs shows the current tab and the switch keys: press **Q / E** on the keyboard or **L1 / R1** on a
+controller.
+
+The compatibility-only page instead shows **Controls only (MENU_LOCK=1)** in its header and has no other tabs. Remove
+the `MENU_LOCK=1` override (or set `MENU_LOCK=0`) to show the full menu.
 
 To limit F1 to the Controls page for compatibility testing:
 

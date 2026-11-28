@@ -111,7 +111,7 @@ extern "C" void menu_open_controls(void);
 extern "C" void menu_toggle(void) {
     if (g_failed_flag() || menu_text_entry_active()) return;
     static int lock = -1;
-    if (lock < 0) lock = rt_knob("MENU_LOCK", "0");
+    if (lock < 0) lock = cfg_from_env("TOTK_MENU_LOCK") && rt_knob("MENU_LOCK", "0");
     if (lock) g_locked.store(1);
     if (g_locked.load() && !menu_is_open()) { menu_open_controls(); return; }
     change_open(-1);
@@ -1117,10 +1117,16 @@ static void layout_controls(uint32_t w, uint32_t h, float scale) {
     opt_reserve_bottom(foot + 24 * scale);
     tab_controls(scale);
     opt_game_look(false);
-    if (fs_slots_enabled()) {   // L / R: the Saves page, named on the right of the upper bar
-        char hint[96];
-        snprintf(hint, sizeof hint, "L / R  %s", menu_text(UI_SAVES_OPEN));
+    {
+        char hint[192];
+        if (fs_slots_enabled())
+            snprintf(hint, sizeof hint, "%s  |  L / R  %s", menu_text(UI_MENU_CONTROLS_ONLY),
+                     menu_text(UI_SAVES_OPEN));
+        else
+            snprintf(hint, sizeof hint, "%s", menu_text(UI_MENU_CONTROLS_ONLY));
         dl->AddText(ImVec2(fw - 64 * scale - ImGui::CalcTextSize(hint).x, (bar - fs) * 0.5f), white, hint);
+    }
+    if (fs_slots_enabled()) {   // L / R opens the Saves page from Controls-only mode
         if (!binds_modal() && !g_modal &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ||
              ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_E, false)))
@@ -1455,6 +1461,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         g_tab_request = -1;
         ImGui::EndTabBar();
     }
+    ImGui::TextDisabled(menu_text(UI_MENU_TAB_HINT), menu_text(kTabNames[g_tab]));
 
     // bottom row: the save status on the left, the two buttons on the right
     ImGui::Spacing();

@@ -1,5 +1,20 @@
 # Progress
 
+## Keeping the full F1 menu independent of INI settings (2026-11-28)
+
+- Commit `5d00d83` changed the F1 default to the full settings menu, but its `rt_knob("MENU_LOCK", "0")` lookup could still honor an old `MENU_LOCK=1` value in `totk.ini`.
+- Updated [runtime/ui/menu.cpp](../runtime/ui/menu.cpp) and [runtime/lua_mod.c](../runtime/lua_mod.c) to activate Controls-only mode only when `TOTK_MENU_LOCK` is explicitly present in the environment and set to `1`. A missing variable, or a stale INI value, now leaves the full menu enabled. The optional compatibility override remains available for test runs.
+- Verification: `python3 tools/check_content.py` and `git diff --check` passed. A Clang syntax check of `lua_mod.c` was blocked because `runtime/ui/menu.h` includes unavailable Vulkan headers. No game build or UI test was run.
+- Next: the just-built test artifact is from before this environment-only guard. Try it as planned; if it shows all tabs, the default is working. If it still shows only Controls, push this guard and the pending tab-hint changes, run **Actions > Test build**, and rebuild the game locally. No user INI changes should be required.
+
+## Making F1 tab navigation visible (2026-11-28)
+
+- Added a line below the full F1 menu's tab bar showing the selected tab and the navigation keys: `Q / E` or controller `L1 / R1`. The tab labels remain directly selectable.
+- The Controls-only compatibility screen now identifies itself as `Controls only (MENU_LOCK=1)` in its header. This mode intentionally has no settings tabs; removing that override or setting `MENU_LOCK=0` opens the full menu.
+- Added the status text in English and Russian in [runtime/ui_text.c](../runtime/ui_text.c) and [runtime/ui_text.h](../runtime/ui_text.h), rendered it from [runtime/ui/menu.cpp](../runtime/ui/menu.cpp), and documented both modes in [docs/setup-windows.en.md](./setup-windows.en.md).
+- Verification: `clang -std=gnu11 -fsyntax-only -Iruntime runtime/ui_text.c`, `python3 tools/check_content.py`, and `git diff --check` passed. The menu C++ could not be syntax-checked because Vulkan headers are unavailable, and no game build or UI test was run. The base full-menu change and Test build workflow were committed and pushed in `5d00d83`; the tab-hint change remains uncommitted.
+- Next: after pushing the pending tab hint and environment-only lock guard, run **Actions > Test build**, download the Windows launcher artifact, and rebuild the game locally. Confirm the full menu shows the selected-tab/key hint.
+
 ## Adding a manual Test build workflow (2026-11-28)
 
 - Added [.github/workflows/test-build.yml](../.github/workflows/test-build.yml), a manual `workflow_dispatch` named **Test build**. It builds on the branch selected when the workflow is started, runs the existing validation, and publishes two downloadable Actions artifacts: `launcher-windows` and `launcher-linux`.

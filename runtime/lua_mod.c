@@ -286,7 +286,7 @@ void lua_mod_command(const char *text, uint64_t n) {
     while (len && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' || cmd[len - 1] == ' ' || !cmd[len - 1])) len--;
     if (len == 13 && !memcmp(cmd, "pc_page_ready", 13)) {
         // The Controls-only lock is opt-in and applies once the replacement page is ready.
-        int lock = data_patch_ui_loaded() && rt_knob("MENU_LOCK", "0");
+        int lock = data_patch_ui_loaded() && cfg_from_env("TOTK_MENU_LOCK") && rt_knob("MENU_LOCK", "0");
         if (lock) menu_lock();
         rt_log("lua mod: PC settings page ready; F1 menu %s",
                lock ? "limited to Controls (TOTK_MENU_LOCK=0 keeps all settings)" : "keeps all settings");
