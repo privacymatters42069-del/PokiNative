@@ -13,7 +13,7 @@
 
 <a href="https://recomplauncher.com/game/pokinative"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a> [![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recomplauncher.com/dev/privacymatters42069-del)
 
-# Thank you all for over 4000 downloads on Github!!! Its so exciting and so fulfilling to know we all are enjoying Paldea, hopefully soon we can all enjoy it together! :) 
+# Thank you all for over 5000 downloads on Github!!! Its so exciting and so fulfilling to know we all are enjoying Paldea, hopefully soon we can all enjoy it together! :) 
 
 </div>
 
