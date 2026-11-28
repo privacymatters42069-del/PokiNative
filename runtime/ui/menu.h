@@ -5,8 +5,8 @@
 //
 // F1 or Esc on the keyboard and Minus and Plus held together (consumed in poll_merged, input_menu_gate in input.h) open it;
 // F1, Esc, B or "Continue" close it. While it is open the game gets no input (input_menu, input.h) and keeps running; the
-// cursor is released from the mouse camera. Tabs Screen, Game, Sound, Controls and Menu (L / R or Q / E switch them) hold
-// option rows (ui/option_rows.h) over the cfg settings; the bottom row has "Continue" and "Quit game".
+// cursor is released from the mouse camera. Tabs Graphics, Settings, Controls, Advanced and Logs (L / R or Q / E switch
+// them) hold option rows (ui/option_rows.h) over the cfg settings; the bottom row has "Continue" and "Quit game".
 // Test hooks (ui/menu.cpp): TOTK_MENU_TEST=<frame>[:<frames per page>] opens the menu at that presented frame and saves
 // one swapchain shot per tab into TOTK_MENU_TEST_DIR; TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,...][;...] sets settings
 // at given frames without input (SAVE=1 writes totk.ini).
@@ -27,9 +27,8 @@ extern "C" {
 // ---- state, any thread
 int menu_is_open(void);
 void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad
-void menu_lock(void);                     // menu_toggle no longer opens the menu and only the Controls page is left:
-                                          // the PC settings page in the game's options has taken over (lua_mod.c);
-                                          // TOTK_MENU_LOCK=0 keeps the whole menu. Esc still releases the cursor.
+void menu_lock(void);                     // menu_toggle opens only Controls after the game's PC settings page is ready;
+                                          // TOTK_MENU_LOCK=0 keeps the full menu (default). Esc still releases the cursor.
 void menu_open_controls(void);            // opens the Controls page, locked or not: the PC settings page's "Controls"
 void menu_open_saves(void);               // opens the Saves page (TOTK_SAVE_SLOTS=1)
                                           // row (lua_mod.c open_controls)

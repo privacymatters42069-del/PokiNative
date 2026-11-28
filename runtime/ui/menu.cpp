@@ -107,12 +107,11 @@ static std::atomic<int> g_locked;
 extern "C" void menu_lock(void) { g_locked.store(1); }
 extern "C" int rt_knob(const char *name, const char *def);
 extern "C" void menu_open_controls(void);
-// F1 / Esc: the Controls page (key mapping, controller, rumble, mouse), the settings being the launcher's; TOTK_MENU_LOCK=0
-// opens the whole old menu instead
+// F1 / Esc opens the full settings menu; TOTK_MENU_LOCK=1 limits it to Controls for compatibility.
 extern "C" void menu_toggle(void) {
     if (g_failed_flag() || menu_text_entry_active()) return;
     static int lock = -1;
-    if (lock < 0) lock = rt_knob("MENU_LOCK", "1");
+    if (lock < 0) lock = rt_knob("MENU_LOCK", "0");
     if (lock) g_locked.store(1);
     if (g_locked.load() && !menu_is_open()) { menu_open_controls(); return; }
     change_open(-1);
@@ -520,7 +519,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_GRAPHICS, TAB_SETTINGS, TAB_CONTROLS, TAB_ADVANCED, TAB_LOGS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -577,7 +576,7 @@ static void test_apply_sets(uint64_t frame) {
     }
 }
 
-// ---- the lists the Screen and Game tabs build
+// ---- the lists the Graphics and Settings tabs build
 enum { MAX_GPUS = 8 };
 static char g_gpu_names[MAX_GPUS][VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 static int g_gpu_n = -1;   // -1: not listed yet
@@ -596,9 +595,10 @@ static void list_gpus(VkInstance inst) {
     g_gpu_n = (int)n;
 }
 
-// Window sizes: the common 16:9 sizes that fit the monitor, the 1920x1080 default and the current size.
-static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3200, 1800},
-                                {3840, 2160}};
+// Launcher window sizes plus the existing common 16:9 sizes.
+static const int kSizes[][2] = {{960, 720},  {1200, 800}, {1280, 720}, {1280, 800}, {1366, 768}, {1440, 1080},
+                                {1600, 900}, {1620, 1080}, {1920, 1080}, {1920, 1200}, {2560, 1080}, {2560, 1440},
+                                {3200, 1800}, {3440, 1440}, {3840, 2160}, {5120, 1440}, {720, 1280}, {1080, 1920}};
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
@@ -736,10 +736,22 @@ static void rows_color(void) {
     }
 }
 
-static void tab_screen(float scale) {
-    opt_begin("##screen", scale);
+static void tab_graphics(float scale) {
+    opt_begin("##graphics", scale);
     opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_window_size();
+    static const char *const output_values[] = {
+        "800x450", "854x480", "1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080",
+        "3440x1440", "5120x1440", "1440x1080", "1620x1080", "1920x1200", "1080x1920"};
+    static const char *const output_names[] = {
+        "450p (800 x 450)", "480p (854 x 480)", "720p (1280 x 720)", "1920 x 1080", "1440p (2560 x 1440)",
+        "2160p / 4K (3840 x 2160)", "2560 x 1080 (21:9)", "3440 x 1440 (21:9)", "5120 x 1440 (32:9)",
+        "1440 x 1080 (4:3)", "1620 x 1080 (3:2)", "1920 x 1200 (16:10)", "1080 x 1920 (9:16)"};
+    if (opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, output_values, output_names,
+                        (int)(sizeof output_values / sizeof *output_values), UI_MENU_OUTPUT_RES_DESC)) {
+        if (!cfg_from_env("TOTK_SVHOST_TEST")) cfg_set("TOTK_SVHOST_TEST", "1");
+        opt_save_soon();
+    }
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
     opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     row_gpu();
@@ -758,23 +770,83 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
+    static const UiTextId on_off[] = {UI_MENU_OFF, UI_MENU_ON};
+    if (opt_choice("TOTK_DLAA", UI_MENU_DLAA, on_off, 2, UI_MENU_DLAA_DESC)) {
+        if (cfg_bool("TOTK_DLAA") && !cfg_from_env("TOTK_FSR2")) cfg_set("TOTK_FSR2", "0");
+        opt_save_soon();
+    }
+    if (opt_choice("TOTK_FSR2", UI_MENU_FSR2, on_off, 2, UI_MENU_FSR2_DESC)) {
+        if (cfg_bool("TOTK_FSR2") && !cfg_from_env("TOTK_DLAA")) cfg_set("TOTK_DLAA", "0");
+        opt_save_soon();
+    }
+    static const char *const dlss_values[] = {"game", "window", "3840x2160"};
+    const char *dlss_names[] = {menu_text(UI_MENU_OUTPUT_RES), menu_text(UI_MENU_WINDOW_SIZE), "4K (3840 x 2160)"};
+    opt_choice_list("TOTK_DLSS_OUT", UI_MENU_DLSS_OUT, dlss_values, dlss_names, 3, UI_MENU_DLSS_OUT_DESC);
+    static const char *const fsr2_values[] = {"game", "window"};
+    const char *fsr2_names[] = {menu_text(UI_MENU_OUTPUT_RES), menu_text(UI_MENU_WINDOW_SIZE)};
+    opt_choice_list("TOTK_FSR2_OUT", UI_MENU_FSR2_OUT, fsr2_values, fsr2_names, 2, UI_MENU_FSR2_OUT_DESC);
+    static const char *const preset_values[] = {"5", "11"};
+    const char *preset_names[] = {menu_text(UI_MENU_DLSS_CNN), menu_text(UI_MENU_DLSS_TRANSFORMER)};
+    opt_choice_list("TOTK_DLAA_PRESET", UI_MENU_DLAA_PRESET, preset_values, preset_names, 2,
+                    UI_MENU_DLAA_PRESET_DESC);
+    static const char *const framegen_values[] = {"0", "2", "3", "4"};
+    const char *framegen_names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_FRAMEGEN_2X),
+                                    menu_text(UI_MENU_FRAMEGEN_3X), menu_text(UI_MENU_FRAMEGEN_4X)};
+    opt_choice_list("TOTK_FRAMEGEN", UI_MENU_FRAMEGEN, framegen_values, framegen_names, 4, UI_MENU_FRAMEGEN_DESC);
+    static const UiTextId levels[] = {UI_MENU_OFF, UI_MENU_QUALITY_LOW, UI_MENU_QUALITY_MEDIUM, UI_MENU_QUALITY_HIGH};
+    opt_choice("TOTK_AO", UI_MENU_AO, levels, 4, UI_MENU_AO_DESC);
+    opt_choice("TOTK_INDIRECT_LIGHT", UI_MENU_INDIRECT_LIGHT, levels, 4, UI_MENU_INDIRECT_LIGHT_DESC);
+    static const char *const shadow_values[] = {"0", "2048", "3072", "4096", "off"};
+    const char *shadow_names[] = {menu_text(UI_MENU_SHADOW_ORIGINAL), menu_text(UI_MENU_SHADOW_2X),
+                                  menu_text(UI_MENU_SHADOW_3X), menu_text(UI_MENU_SHADOW_4X),
+                                  menu_text(UI_MENU_OFF)};
+    opt_choice_list("TOTK_SHADOW_RES", UI_MENU_SHADOW_RES, shadow_values, shadow_names, 5, UI_MENU_SHADOW_RES_DESC);
     rows_color();
     opt_end();
 }
 
-static void tab_game(float scale) {
-    opt_begin("##game", scale);
+static void tab_settings(float scale) {
+    opt_begin("##settings", scale);
+    opt_group(UI_MENU_GROUP_GAME);
     row_fps_limit();   // Violet keeps its speed at any rate through the patch set fps_dt (frame_dt.c)
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
-    opt_end();
-}
 
-static void tab_sound(float scale) {
-    opt_begin("##sound", scale);
+    opt_group(UI_MENU_GROUP_POPULATION);
+    static const UiTextId population[] = {UI_MENU_POP_SWITCH, UI_MENU_POP_SWITCH2, UI_MENU_POP_ENHANCED,
+                                          UI_MENU_POP_EXTREME};
+    opt_choice("TOTK_POPULATION", UI_MENU_POPULATION, population, 4, UI_MENU_POPULATION_DESC);
+    static const char *const shown_values[] = {"12", "24", "36", "48"};
+    const char *shown_names[] = {"12", "24", "36", "48"};
+    opt_choice_list("TOTK_PEOPLE_SHOWN", UI_MENU_PEOPLE_SHOWN, shown_values, shown_names, 4,
+                    UI_MENU_PEOPLE_SHOWN_DESC);
+    static const char *const people_detail_values[] = {"1", "2", "4", "6", "8", "10"};
+    const char *people_detail_names[] = {"8 m", "16 m", "32 m", "48 m", "64 m", "80 m"};
+    opt_choice_list("TOTK_PEOPLE_DETAIL", UI_MENU_PEOPLE_DETAIL, people_detail_values, people_detail_names, 6,
+                    UI_MENU_PEOPLE_DETAIL_DESC);
+    static const char *const pokemon_detail_values[] = {"1", "2", "4", "6", "8"};
+    const char *pokemon_detail_names[] = {"10 m", "20 m", "40 m", "60 m", "80 m"};
+    opt_choice_list("TOTK_POKEMON_DETAIL", UI_MENU_POKEMON_DETAIL, pokemon_detail_values, pokemon_detail_names, 5,
+                    UI_MENU_POKEMON_DETAIL_DESC);
+    opt_toggle("TOTK_NO_EXCLUSIVES", UI_MENU_NO_EXCLUSIVES, UI_MENU_NO_EXCLUSIVES_DESC);
+    opt_toggle("TOTK_NO_TRADE_EVO", UI_MENU_NO_TRADE_EVO, UI_MENU_NO_TRADE_EVO_DESC);
+
+    opt_group(UI_MENU_GROUP_PERFORMANCE);
+    opt_toggle("TOTK_ACQUIRE_AHEAD", UI_MENU_ACQUIRE_AHEAD, UI_MENU_ACQUIRE_AHEAD_DESC);
+    opt_toggle("TOTK_CORE_LAZY", UI_MENU_CORE_LAZY, UI_MENU_CORE_LAZY_DESC);
+    opt_toggle("TOTK_SUBMIT_DEFER", UI_MENU_SUBMIT_DEFER, UI_MENU_SUBMIT_DEFER_DESC);
+    static const char *const hot_values[] = {"300", "0"};
+    const char *hot_names[] = {menu_text(UI_MENU_HOT_MEMORY_COOL), menu_text(UI_MENU_HOT_MEMORY_KEEP)};
+    opt_choice_list("TOTK_HOT_COOL", UI_MENU_HOT_MEMORY, hot_values, hot_names, 2, UI_MENU_HOT_MEMORY_DESC);
+
+    opt_group(UI_MENU_GROUP_AUDIO);
     opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
+    opt_group(UI_MENU_GROUP_MENU);
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
+                                     UI_MENU_LANGNAME_DE};
+    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 4, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -796,8 +868,7 @@ static const char *pad_layout_note(void) {
 
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
-    // On the locked (default) F1/Esc page this is the only tab shown, so the performance overlay's own row
-    // (tab_screen, TAB_SCREEN) is otherwise unreachable without TOTK_MENU_LOCK=0.
+    // The Controls-only compatibility page has its own performance-overlay row.
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
@@ -812,13 +883,6 @@ static void tab_controls(float scale) {
     binds_rows(scale);
     opt_end();
     binds_after_page();
-}
-
-static void tab_menu(float scale) {
-    opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_DE};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 4, UI_MENU_MENU_LANG_DESC);
-    opt_end();
 }
 
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
@@ -859,6 +923,7 @@ static void reset_all(void) {
     const char *keys[128];
     int n = 0;
     for (const CfgMeta *m; n < 128 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
+    if (n < 128) keys[n++] = "SVHOST_TEST";   // output-resolution selection enables this internal host path
     int done = cfg_reset(keys, n);
     opt_save_soon();
     rt_log("menu: reset %d settings to their defaults", done);
@@ -875,7 +940,7 @@ static const char *action_value(const ActionNote &a, UiTextId done_text) {
 static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
 
 static void tab_advanced(float scale) {
-    static ActionNote copy_note, log_note;
+    static ActionNote copy_note;
     opt_begin("##advanced", scale);
     opt_text(UI_MENU_ADV_WARNING, true);
 
@@ -937,11 +1002,6 @@ static void tab_advanced(float scale) {
         snprintf(rec_path, sizeof rec_path, "%s/input-record.txt", sysinfo_log_folder(dir, sizeof dir) ? dir : ".");
     }
     row_set_or_not("TOTK_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
-    if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
-        char dir[512];
-        bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
-        if (!ok) action_done(log_note, false);   // success shows as the opened folder
-    }
     if (opt_button("##copy_info", UI_MENU_COPY_INFO, UI_MENU_COPY_INFO_DESC,
                    action_value(copy_note, UI_MENU_COPY_INFO_DONE))) {
         static char text[16384];
@@ -980,8 +1040,28 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
+static void tab_logs(float scale) {
+    static ActionNote log_note;
+    opt_begin("##logs", scale);
+    opt_group(UI_MENU_GROUP_LOGS);
+    opt_text(UI_MENU_LOGS_HELP);
+    char dir[512];
+    if (sysinfo_log_folder(dir, sizeof dir)) {
+        opt_text(UI_MENU_LOG_PATH);
+        ImGui::TextWrapped("%s", dir);
+    } else {
+        opt_text(UI_MENU_LOG_PATH_UNAVAILABLE, true);
+    }
+    if (opt_button("##open_log_folder", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC,
+                   action_value(log_note, UI_MENU_OPEN_LOG_DONE))) {
+        char path[512];
+        action_done(log_note, sysinfo_log_folder(path, sizeof path) && plat_open_folder(path));
+    }
+    opt_end();
+}
+
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_CONTROLS,
+                                              UI_MENU_TAB_ADVANCED, UI_MENU_TAB_LOGS};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static std::atomic<int> g_tab_wanted{-1};   // menu_open_controls, from another thread
@@ -999,9 +1079,8 @@ extern "C" void menu_open_saves(void) {
 }
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
 
-// ---- the Controls page: what is left of the menu once the PC settings page in the game's options has taken over the
-// other settings (menu_lock). It covers the screen in the look of the game's own option pages: a purple bar with the
-// title on top and one with the way back below, the rows on dark blue. TOTK_MENU_LOCK=0 keeps the whole menu.
+// ---- the Controls-only compatibility page. It covers the screen in the look of the game's own option pages: a purple
+// bar with the title on top and one with the way back below, the rows on dark blue. TOTK_MENU_LOCK=1 selects this page.
 static void layout_controls(uint32_t w, uint32_t h, float scale) {
     const float bar = floorf(84 * scale), foot = floorf(72 * scale), fw = (float)w, fh = (float)h;
     const ImU32 purple = IM_COL32(122, 40, 176, 255), yellow = IM_COL32(238, 194, 10, 255), white = IM_COL32(255, 255, 255, 255);
@@ -1365,12 +1444,11 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             // buttons and the tabs (up from "Continue" went to the tabs, down from the tabs to "Continue")
             opt_reserve_bottom(bottom);
             switch (k) {
-            case TAB_SCREEN: tab_screen(scale); break;
-            case TAB_GAME: tab_game(scale); break;
-            case TAB_SOUND: tab_sound(scale); break;
+            case TAB_GRAPHICS: tab_graphics(scale); break;
+            case TAB_SETTINGS: tab_settings(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
-            case TAB_MENU: tab_menu(scale); break;
             case TAB_ADVANCED: tab_advanced(scale); break;
+            case TAB_LOGS: tab_logs(scale); break;
             }
             ImGui::EndTabItem();
         }

@@ -251,10 +251,17 @@ At the next normal start (step 8), **PC Settings** is in the main menu under Opt
 
 Frame rate limits above 60 are experimental: effects may stutter. Restart after changing the limit so walking indoors stays smooth.
 
-With this list, **F1** stays closed. To get the whole old menu for one run, for troubleshooting for example:
+**F1** opens the full in-game settings menu: Graphics, Settings, Controls, Advanced and Logs. The optional Saves page
+still appears only when save slots are enabled. The game's **PC Settings** page under Options remains available too.
+Graphics includes the game resolution, scaling, DLAA / DLSS, FSR 2, frame generation, lighting and shadows. Settings
+includes population and model detail, game mode, performance compatibility options, volume and menu language. Advanced
+keeps the lower-level Vulkan and troubleshooting options. Rows that need a restart are marked in the menu. Logs shows
+the game log folder and can open it in Windows while the game is running.
+
+To limit F1 to the Controls page for compatibility testing:
 
 ```
-.venv\Scripts\python tools\run_with.py MENU_LOCK=0
+.venv\Scripts\python tools\run_with.py MENU_LOCK=1
 ```
 
 ## Updating

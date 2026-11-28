@@ -1,0 +1,112 @@
+name: Build launcher artifacts
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Check that game content is not in the repository
+        run: python tools/check_content.py
+      - name: Install test dependencies
+        run: python -m pip install -r tools/requirements.txt
+      - name: Check launcher package rules
+        run: python tools/check_launcher.py
+      - name: Extraction tests
+        run: python tests/test_extract.py
+      - name: RomFS tests
+        run: python tests/test_romfs.py
+      - name: Phase report tests
+        run: python tests/test_phases.py
+      - name: Install lifter build tools
+        run: |
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            update
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            install -y clang lld llvm ninja-build
+      - name: Lifter differential tests
+        run: python tests/lifter/test_lifter.py
+
+  build-windows:
+    needs: validate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: make mingw-w64-ucrt-x86_64-gcc
+      - name: Build hactool
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: python tools/build_hactool.py
+      - name: Build shader translator
+        run: python tools/build_xlate.py
+      - name: Build Windows launcher
+        run: python tools/make_launcher.py
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: launcher-windows
+          if-no-files-found: error
+          path: |
+            dist/KarPur-Launcher-Windows-x86_x64.exe
+            dist/KarPur-Launcher-Windows-x86_x64.exe.sha256
+            dist/recomplauncher.json
+            dist/PokiNative-*-Windows-x64.zip
+
+  build-linux:
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Install AppImage and SDL build dependencies
+        run: |
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            update
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            install -y \
+            build-essential cmake clang lld llvm ninja-build pkg-config squashfs-tools \
+            libasound2-dev libdbus-1-dev libdecor-0-dev libdrm-dev libegl1-mesa-dev \
+            libgbm-dev libibus-1.0-dev libopus-dev libpipewire-0.3-dev libpulse-dev \
+            libsamplerate0-dev libudev-dev libvulkan-dev libvpx-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+            libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev \
+            libxxf86vm-dev libxtst-dev libzstd-dev libclang-rt-18-dev
+      - name: Build Linux AppImage
+        run: python tools/make_appimage.py
+      - name: Upload Linux release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: launcher-linux
+          if-no-files-found: error
+          path: |
+            dist/linux/PokiNative-*-linux-x86_64.AppImage
+            dist/linux/PokiNative-*-linux-x86_64.AppImage.sha256

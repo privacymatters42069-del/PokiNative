@@ -146,6 +146,18 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
+    m = cfg_meta("ACQUIRE_AHEAD");
+    CHECK(m && EQ(m->def, "0") && EQ(m->values, "0|1") && !m->live,
+          "meta: acquire_ahead is off by default and needs a restart");
+    m = cfg_meta("CORE_LAZY");
+    CHECK(m && EQ(m->def, "0") && EQ(m->values, "0|1") && !m->live,
+          "meta: core_lazy is off by default and needs a restart");
+    m = cfg_meta("SUBMIT_DEFER");
+    CHECK(m && EQ(m->def, "1") && EQ(m->values, "0|1") && !m->live,
+          "meta: submit_defer is on by default and needs a restart");
+    m = cfg_meta("HOT_COOL");
+    CHECK(m && EQ(m->def, "300") && EQ(m->values, "0|300") && !m->live,
+          "meta: hot_cool defaults to 300 and needs a restart");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 

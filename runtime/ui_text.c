@@ -27,8 +27,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",
-    [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
+    [UI_MENU_TAB_SCREEN] = "Graphics", [UI_MENU_TAB_GAME] = "Settings", [UI_MENU_TAB_SOUND] = "Sound",
     [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
+    [UI_MENU_TAB_LOGS] = "Logs",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_QUIT_CONFIRM] = "Quit the game? Progress since your last save is lost.",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
@@ -55,7 +56,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, Steam Deck) moves it to the top "
-                                "and bottom edges.",
+                                "and bottom edges. Unusual aspect ratios and higher resolutions are experimental and "
+                                "depend on matching render patches.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
@@ -78,6 +80,30 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_DLAA] = "NVIDIA DLAA / DLSS", [UI_MENU_DLAA_DESC] = "Uses NVIDIA DLAA at the game resolution or DLSS "
+        "at the selected output size. Needs an RTX GPU and NVIDIA's nvngx_dlss.dll; has no effect if either is missing.",
+    [UI_MENU_FSR2] = "AMD FSR 2", [UI_MENU_FSR2_DESC] = "Temporal upscaling for compatible AMD, NVIDIA and Intel GPUs. "
+        "Turn this off to use the game's own image reconstruction or DLAA / DLSS.",
+    [UI_MENU_DLSS_OUT] = "DLSS output", [UI_MENU_DLSS_OUT_DESC] = "Game resolution uses DLAA; Window size upscales "
+        "with DLSS; 4K renders above the window size and costs more GPU time and video memory. Frame generation forces "
+        "the window size.",
+    [UI_MENU_FSR2_OUT] = "FSR 2 output", [UI_MENU_FSR2_OUT_DESC] = "Choose the game resolution or the window size for "
+        "AMD FSR 2.",
+    [UI_MENU_DLAA_PRESET] = "DLSS model", [UI_MENU_DLAA_PRESET_DESC] = "CNN is steadier; Transformer is sharper but "
+        "can smear motion. Takes effect after a restart.",
+    [UI_MENU_DLSS_CNN] = "CNN (steady)", [UI_MENU_DLSS_TRANSFORMER] = "Transformer (sharper)",
+    [UI_MENU_FRAMEGEN] = "Frame generation", [UI_MENU_FRAMEGEN_DESC] = "Creates additional displayed frames. "
+        "Requires supported NVIDIA RTX hardware and Streamline; 3x and 4x require RTX 50-series. Adds latency and "
+        "does not increase the game's simulation rate.",
+    [UI_MENU_FRAMEGEN_2X] = "2x (DLSS)", [UI_MENU_FRAMEGEN_3X] = "3x (RTX 50)", [UI_MENU_FRAMEGEN_4X] = "4x (RTX 50)",
+    [UI_MENU_AO] = "Ambient occlusion", [UI_MENU_AO_DESC] = "Adds contact shadows; higher levels cost more GPU time.",
+    [UI_MENU_INDIRECT_LIGHT] = "Indirect lighting", [UI_MENU_INDIRECT_LIGHT_DESC] = "Adds bounced light; higher levels "
+        "cost more GPU time.",
+    [UI_MENU_SHADOW_RES] = "Sun shadow resolution", [UI_MENU_SHADOW_RES_DESC] = "Higher resolutions use more video "
+        "memory and GPU time. Disabled removes sun shadows.",
+    [UI_MENU_SHADOW_ORIGINAL] = "Original (1024 x 1024)", [UI_MENU_SHADOW_2X] = "2x (2048 x 2048)",
+    [UI_MENU_SHADOW_3X] = "3x (3072 x 3072)", [UI_MENU_SHADOW_4X] = "4x (4096 x 4096)",
+    [UI_MENU_QUALITY_LOW] = "Low", [UI_MENU_QUALITY_MEDIUM] = "Medium", [UI_MENU_QUALITY_HIGH] = "High",
     [UI_MENU_COLOR] = "Colour",
     [UI_MENU_COLOR_PRESET] = "Colour profile",
     [UI_MENU_COLOR_PRESET_DESC] = "Sets the four values below. Vivid: more contrast and saturation, shadows opened a "
@@ -117,6 +143,32 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "keyboard stays quiet until the window is in front again. Off, it pauses when its "
                                   "window loses focus, as on the Switch when Home is pressed; a load interrupted that "
                                   "way can stop for good.",
+    [UI_MENU_GROUP_GAME] = "Game",
+    [UI_MENU_GROUP_POPULATION] = "Population and detail",
+    [UI_MENU_GROUP_PERFORMANCE] = "Performance and compatibility",
+    [UI_MENU_GROUP_AUDIO] = "Audio", [UI_MENU_GROUP_MENU] = "Menu",
+    [UI_MENU_POPULATION] = "Wild Pokémon population", [UI_MENU_POPULATION_DESC] = "More wild Pokémon appear at once. "
+        "Higher values can lower the frame rate; takes effect after a restart.",
+    [UI_MENU_POP_SWITCH] = "Switch (15)", [UI_MENU_POP_SWITCH2] = "Switch 2 (40)",
+    [UI_MENU_POP_ENHANCED] = "Enhanced (80)", [UI_MENU_POP_EXTREME] = "Extreme (120)",
+    [UI_MENU_PEOPLE_SHOWN] = "People shown", [UI_MENU_PEOPLE_SHOWN_DESC] = "Maximum people visible nearby.",
+    [UI_MENU_PEOPLE_DETAIL] = "People detail distance", [UI_MENU_PEOPLE_DETAIL_DESC] = "Distance at which people use "
+        "detailed models.",
+    [UI_MENU_POKEMON_DETAIL] = "Pokémon detail distance", [UI_MENU_POKEMON_DETAIL_DESC] = "Distance at which Pokémon "
+        "use detailed models.",
+    [UI_MENU_NO_EXCLUSIVES] = "Allow both versions' exclusives", [UI_MENU_NO_EXCLUSIVES_DESC] = "Allows wild Pokémon "
+        "exclusive to either edition to appear. Takes effect after a restart.",
+    [UI_MENU_NO_TRADE_EVO] = "Trade evolutions without trading", [UI_MENU_NO_TRADE_EVO_DESC] = "Lets trade-only evolutions "
+        "evolve by leveling up instead. Takes effect after a restart.",
+    [UI_MENU_ACQUIRE_AHEAD] = "Acquire display frames early", [UI_MENU_ACQUIRE_AHEAD_DESC] = "Reuses a display slot "
+        "as soon as its own display time arrives. One part of the launcher's stutter-reduction options; restart required.",
+    [UI_MENU_CORE_LAZY] = "Assign virtual cores on demand", [UI_MENU_CORE_LAZY_DESC] = "Keeps a thread off a virtual "
+        "core until it asks for one. The launcher's aggressive stutter-reduction option; restart required.",
+    [UI_MENU_SUBMIT_DEFER] = "Defer GPU submissions", [UI_MENU_SUBMIT_DEFER_DESC] = "Combines nearby GPU work to "
+        "reduce submission overhead. Disable if it causes compatibility or pacing problems; restart required.",
+    [UI_MENU_HOT_MEMORY] = "Keep GPU memory hot", [UI_MENU_HOT_MEMORY_DESC] = "Prevents the runtime from cooling "
+        "recently written memory. May reduce stutter but can increase video-memory use; restart required.",
+    [UI_MENU_HOT_MEMORY_COOL] = "Cool after 300 submissions", [UI_MENU_HOT_MEMORY_KEEP] = "Never cool",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Master volume of the game.",
 
@@ -196,7 +248,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
     [UI_MENU_GROUP_TEXMEM] = "Textures and memory", [UI_MENU_GROUP_FIXES] = "Render fixes",
-    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Diagnostics",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Diagnostics", [UI_MENU_GROUP_LOGS] = "Game logs",
     [UI_MENU_DYN_DELTA] = "Skip unchanged Vulkan state",
     [UI_MENU_DYN_DELTA_DESC] = "Records only graphics pipeline state that changed since the previous draw. Turn off if a driver renders incorrectly.",
     [UI_MENU_ASYNC_PREEMPT] = "Virtual core preemption",
@@ -264,7 +316,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Frame time that counts as a freeze.",
     [UI_MENU_INPUT_RECORD] = "Input recording",
     [UI_MENU_INPUT_RECORD_DESC] = "Writes your inputs to a file for bug reports.",
-    [UI_MENU_OPEN_LOG] = "Open log folder", [UI_MENU_OPEN_LOG_DESC] = "Shows the folder with the log files.",
+    [UI_MENU_OPEN_LOG] = "Open log folder", [UI_MENU_OPEN_LOG_DESC] = "Opens the game's log folder outside the game.",
+    [UI_MENU_OPEN_LOG_DONE] = "Opened", [UI_MENU_LOGS_HELP] = "The game writes its log files to this folder. Open it "
+        "to view or copy the logs while the game continues running.",
+    [UI_MENU_LOG_PATH] = "Log folder:", [UI_MENU_LOG_PATH_UNAVAILABLE] = "The log folder location is unavailable.",
     [UI_MENU_COPY_INFO] = "Copy system info",
     [UI_MENU_COPY_INFO_DESC] = "Copies GPU, driver, CPU, RAM and changed settings to the clipboard.",
     [UI_MENU_COPY_INFO_DONE] = "Copied", [UI_MENU_ACTION_FAILED] = "did not work",
@@ -314,8 +369,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
-    [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
+    [UI_MENU_TAB_SCREEN] = "Графика", [UI_MENU_TAB_GAME] = "Настройки", [UI_MENU_TAB_SOUND] = "Звук",
     [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
+    [UI_MENU_TAB_LOGS] = "Журналы",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_QUIT_CONFIRM] = "Выйти из игры? Прогресс после последнего сохранения будет потерян.",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
@@ -344,7 +400,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, Steam Deck) переносит его к "
-                                "верхнему и нижнему краям.",
+                                "верхнему и нижнему краям. Необычные пропорции и высокое разрешение экспериментальны "
+                                "и зависят от подходящих патчей отрисовки.",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
@@ -367,6 +424,28 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_DLAA] = "NVIDIA DLAA / DLSS", [UI_MENU_DLAA_DESC] = "Использует NVIDIA DLAA в разрешении игры или DLSS "
+        "в выбранном разрешении вывода. Нужны видеокарта RTX и nvngx_dlss.dll от NVIDIA; без них функция не работает.",
+    [UI_MENU_FSR2] = "AMD FSR 2", [UI_MENU_FSR2_DESC] = "Временное масштабирование для совместимых видеокарт AMD, "
+        "NVIDIA и Intel. Выключите, чтобы использовать обработку изображения игры или DLAA / DLSS.",
+    [UI_MENU_DLSS_OUT] = "Вывод DLSS", [UI_MENU_DLSS_OUT_DESC] = "Разрешение игры использует DLAA; размер окна — "
+        "DLSS; 4K рисует изображение выше размера окна и требует больше времени GPU и видеопамяти. Генерация кадров "
+        "всегда использует размер окна.",
+    [UI_MENU_FSR2_OUT] = "Вывод FSR 2", [UI_MENU_FSR2_OUT_DESC] = "Разрешение игры или размер окна для AMD FSR 2.",
+    [UI_MENU_DLAA_PRESET] = "Модель DLSS", [UI_MENU_DLAA_PRESET_DESC] = "CNN стабильнее; Transformer резче, но может "
+        "размазывать движение. Действует после перезапуска.",
+    [UI_MENU_DLSS_CNN] = "CNN (стабильная)", [UI_MENU_DLSS_TRANSFORMER] = "Transformer (резче)",
+    [UI_MENU_FRAMEGEN] = "Генерация кадров", [UI_MENU_FRAMEGEN_DESC] = "Создаёт дополнительные отображаемые кадры. "
+        "Нужны совместимая NVIDIA RTX и Streamline; для 3x и 4x нужна RTX 50. Добавляет задержку и не ускоряет симуляцию игры.",
+    [UI_MENU_FRAMEGEN_2X] = "2x (DLSS)", [UI_MENU_FRAMEGEN_3X] = "3x (RTX 50)", [UI_MENU_FRAMEGEN_4X] = "4x (RTX 50)",
+    [UI_MENU_AO] = "Затенение контакта", [UI_MENU_AO_DESC] = "Добавляет контактные тени; высокие уровни сильнее нагружают GPU.",
+    [UI_MENU_INDIRECT_LIGHT] = "Отражённый свет", [UI_MENU_INDIRECT_LIGHT_DESC] = "Добавляет отражённый свет; высокие "
+        "уровни сильнее нагружают GPU.",
+    [UI_MENU_SHADOW_RES] = "Разрешение теней солнца", [UI_MENU_SHADOW_RES_DESC] = "Высокое разрешение требует больше "
+        "видеопамяти и времени GPU. Отключение убирает тени солнца.",
+    [UI_MENU_SHADOW_ORIGINAL] = "Исходное (1024 x 1024)", [UI_MENU_SHADOW_2X] = "2x (2048 x 2048)",
+    [UI_MENU_SHADOW_3X] = "3x (3072 x 3072)", [UI_MENU_SHADOW_4X] = "4x (4096 x 4096)",
+    [UI_MENU_QUALITY_LOW] = "Низкое", [UI_MENU_QUALITY_MEDIUM] = "Среднее", [UI_MENU_QUALITY_HIGH] = "Высокое",
     [UI_MENU_COLOR] = "Цвет",
     [UI_MENU_COLOR_PRESET] = "Цветовой профиль",
     [UI_MENU_COLOR_PRESET_DESC] = "Задаёт четыре значения ниже. «Яркий»: больше контраста и насыщенности, тени немного "
@@ -406,6 +485,32 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "действует, пока окно не вернётся на передний план. Выключено: игра встаёт на паузу, "
                                   "когда окно теряет фокус, как на Switch при нажатии Home; прерванная так загрузка "
                                   "может остановиться насовсем.",
+    [UI_MENU_GROUP_GAME] = "Игра",
+    [UI_MENU_GROUP_POPULATION] = "Количество и детализация",
+    [UI_MENU_GROUP_PERFORMANCE] = "Производительность и совместимость",
+    [UI_MENU_GROUP_AUDIO] = "Звук", [UI_MENU_GROUP_MENU] = "Меню",
+    [UI_MENU_POPULATION] = "Количество диких покемонов", [UI_MENU_POPULATION_DESC] = "Одновременно появляется больше "
+        "диких покемонов. Высокие значения могут снизить частоту кадров; действует после перезапуска.",
+    [UI_MENU_POP_SWITCH] = "Switch (15)", [UI_MENU_POP_SWITCH2] = "Switch 2 (40)",
+    [UI_MENU_POP_ENHANCED] = "Улучшенное (80)", [UI_MENU_POP_EXTREME] = "Максимум (120)",
+    [UI_MENU_PEOPLE_SHOWN] = "Видимые люди", [UI_MENU_PEOPLE_SHOWN_DESC] = "Максимум людей, видимых поблизости.",
+    [UI_MENU_PEOPLE_DETAIL] = "Детализация людей", [UI_MENU_PEOPLE_DETAIL_DESC] = "Расстояние, на котором люди "
+        "используют подробные модели.",
+    [UI_MENU_POKEMON_DETAIL] = "Детализация покемонов", [UI_MENU_POKEMON_DETAIL_DESC] = "Расстояние, на котором "
+        "покемоны используют подробные модели.",
+    [UI_MENU_NO_EXCLUSIVES] = "Эксклюзивы обеих версий", [UI_MENU_NO_EXCLUSIVES_DESC] = "Позволяет появляться диким "
+        "покемонам, эксклюзивным для любой версии. Действует после перезапуска.",
+    [UI_MENU_NO_TRADE_EVO] = "Эволюция без обмена", [UI_MENU_NO_TRADE_EVO_DESC] = "Покемоны, эволюционирующие только "
+        "при обмене, смогут эволюционировать при повышении уровня. Действует после перезапуска.",
+    [UI_MENU_ACQUIRE_AHEAD] = "Заранее получать кадры экрана", [UI_MENU_ACQUIRE_AHEAD_DESC] = "Повторно использует "
+        "слот вывода сразу по наступлении его времени. Один из параметров снижения подёргиваний в лаунчере; нужен перезапуск.",
+    [UI_MENU_CORE_LAZY] = "Назначать виртуальные ядра по запросу", [UI_MENU_CORE_LAZY_DESC] = "Не назначает потоку "
+        "виртуальное ядро, пока тот его не запросит. Агрессивный режим снижения подёргиваний в лаунчере; нужен перезапуск.",
+    [UI_MENU_SUBMIT_DEFER] = "Откладывать отправку GPU", [UI_MENU_SUBMIT_DEFER_DESC] = "Объединяет близкие команды GPU, "
+        "снижая накладные расходы. Выключите при проблемах совместимости или плавности; нужен перезапуск.",
+    [UI_MENU_HOT_MEMORY] = "Сохранять память GPU активной", [UI_MENU_HOT_MEMORY_DESC] = "Не охлаждает недавно "
+        "записанную память. Может уменьшить подёргивания, но увеличить использование видеопамяти; нужен перезапуск.",
+    [UI_MENU_HOT_MEMORY_COOL] = "Охлаждать через 300 отправок", [UI_MENU_HOT_MEMORY_KEEP] = "Не охлаждать",
 
     [UI_MENU_VOLUME] = "Громкость", [UI_MENU_VOLUME_DESC] = "Общая громкость игры.",
 
@@ -490,7 +595,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
     [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",
     [UI_MENU_GROUP_TEXMEM] = "Текстуры и память", [UI_MENU_GROUP_FIXES] = "Исправления графики",
-    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Диагностика",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Диагностика", [UI_MENU_GROUP_LOGS] = "Журналы игры",
     [UI_MENU_DYN_DELTA] = "Пропуск неизменённых состояний Vulkan",
     [UI_MENU_DYN_DELTA_DESC] = "Записывает только состояние графического конвейера, изменившееся с прошлого вызова. Выключите, если драйвер неверно отображает графику.",
     [UI_MENU_ASYNC_PREEMPT] = "Вытеснение на виртуальных ядрах",
@@ -560,7 +665,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Время кадра, которое считается подвисанием.",
     [UI_MENU_INPUT_RECORD] = "Запись ввода",
     [UI_MENU_INPUT_RECORD_DESC] = "Пишет ваш ввод в файл для отчёта об ошибке.",
-    [UI_MENU_OPEN_LOG] = "Открыть папку журналов", [UI_MENU_OPEN_LOG_DESC] = "Показывает папку с файлами журнала.",
+    [UI_MENU_OPEN_LOG] = "Открыть папку журналов", [UI_MENU_OPEN_LOG_DESC] = "Открывает папку журналов игры вне игры.",
+    [UI_MENU_OPEN_LOG_DONE] = "Открыта", [UI_MENU_LOGS_HELP] = "Игра записывает журналы в эту папку. Откройте её, "
+        "чтобы просмотреть или скопировать журналы, пока игра продолжает работать.",
+    [UI_MENU_LOG_PATH] = "Папка журналов:", [UI_MENU_LOG_PATH_UNAVAILABLE] = "Расположение папки журналов недоступно.",
     [UI_MENU_COPY_INFO] = "Копировать сведения о системе",
     [UI_MENU_COPY_INFO_DESC] = "Копирует в буфер обмена видеокарту, драйвер, процессор, память и изменённые настройки.",
     [UI_MENU_COPY_INFO_DONE] = "Скопировано", [UI_MENU_ACTION_FAILED] = "не получилось",

@@ -11,6 +11,8 @@
 
 [Download the launcher](https://github.com/privacymatters42069-del/PokiNative/releases) · [0.4.6.7 release notes](docs/releases/0.4.6.7.md) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
 
+To test a branch, open the manual [Test build workflow](https://github.com/privacymatters42069-del/PokiNative/actions/workflows/test-build.yml), click **Run workflow**, and select the branch. Download its `launcher-windows` and `launcher-linux` artifacts when the run succeeds. These are launcher packages, not prebuilt game executables; the game is built locally from your own game files. This workflow does not publish a release.
+
 <a href="https://recomplauncher.com/game/pokinative"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a> [![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recomplauncher.com/dev/privacymatters42069-del)
 
 # Thank you all for over 5000 downloads on Github!!! Its so exciting and so fulfilling to know we all are enjoying Paldea, hopefully soon we can all enjoy it together! :) 

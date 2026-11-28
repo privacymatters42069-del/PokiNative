@@ -1,0 +1,14 @@
+name: Test build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows and Linux test artifacts
+    uses: ./.github/workflows/build-launcher-artifacts.yml
+    permissions:
+      contents: read

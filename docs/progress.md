@@ -1,5 +1,33 @@
 # Progress
 
+## Adding a manual Test build workflow (2026-11-28)
+
+- Added [.github/workflows/test-build.yml](../.github/workflows/test-build.yml), a manual `workflow_dispatch` named **Test build**. It builds on the branch selected when the workflow is started, runs the existing validation, and publishes two downloadable Actions artifacts: `launcher-windows` and `launcher-linux`.
+- Extracted the validation, Windows launcher, and Linux AppImage jobs from [.github/workflows/build-launchers.yml](../.github/workflows/build-launchers.yml) into the reusable [.github/workflows/build-launcher-artifacts.yml](../.github/workflows/build-launcher-artifacts.yml). The release workflow calls the same jobs, so the two platforms use one build definition rather than diverging copies.
+- Preserved tag-triggered draft releases. The release job now requires a tag-push event, so manual dispatches produce artifacts only, even if a tag is selected.
+- Updated [README.md](../README.md) with the Actions path and clarified that these artifacts are launchers, not prebuilt game executables. The game's own files and generated code remain on the player's PC; the launcher builds the game locally.
+- Verification: `python3 tools/check_content.py` passed, `git diff --check` passed, and Ruby YAML parsing plus structural assertions confirmed the manual-only Test build trigger, shared Windows/Linux jobs, and push-tag-only release condition. No GitHub Actions run was started from this workspace.
+- Limitation: this workflow does not produce a ready-to-play game executable. It builds the Windows launcher package and Linux AppImage that build the game locally from the player's own files.
+- Next: push these changes to the default branch. In GitHub, use **Actions > Test build > Run workflow**, select the branch to test, and start the run. Confirm it succeeds and offers `launcher-windows` and `launcher-linux`, then download the artifact for your platform.
+
+## Exposing launcher runtime settings in F1 (2026-11-27)
+
+- [runtime/ui/menu.cpp](../runtime/ui/menu.cpp) now opens the full settings menu from F1 by default. It has Graphics, Settings, Controls, Advanced and Logs tabs; Controls remains available from the game's PC Settings page, and the optional existing Saves page remains separate rather than becoming a tab. Graphics and Settings include the launcher's runtime choices, including game resolution, scaling, lighting, population/detail, language, volume and performance/compatibility controls. The Logs tab shows the log-folder path and provides an action to open it outside the game.
+- The game-resolution choice enables `TOTK_SVHOST_TEST` when the environment does not override it. Reset All also clears that internal flag, so resetting the output resolution does not leave the experimental host-resolution path enabled.
+- [runtime/cfg.c](../runtime/cfg.c) registers defaults, valid values, restart behavior and INI sections for `ACQUIRE_AHEAD`, `CORE_LAZY`, `SUBMIT_DEFER` and `HOT_COOL`; routes `SVHOST_TEST` to `[display]`; and writes `OPERATION_MODE` to `[display]`, matching the launcher's existing file format.
+- [runtime/cfg_probe.c](../runtime/cfg_probe.c) checks the four newly exposed performance/compatibility settings' defaults, accepted values and restart requirements.
+- [runtime/lua_mod.c](../runtime/lua_mod.c) and [runtime/ui/menu.h](../runtime/ui/menu.h) make Controls-only mode opt-in through `TOTK_MENU_LOCK=1`; the full menu is the default. Existing save-slot behavior is unchanged.
+- [runtime/ui_text.h](../runtime/ui_text.h) and [runtime/ui_text.c](../runtime/ui_text.c) add the tab and option text in English and Russian. Toggle labels describe what enabling the option does. [docs/setup-windows.en.md](./setup-windows.en.md) documents the tabs, the retained PC Settings page and the compatibility override.
+- Verification: `git diff --check` passed. `clang -std=gnu11 -fsyntax-only -Iruntime runtime/ui_text.c runtime/cfg.c runtime/cfg_probe.c` passed. A focused menu-text check also passed before the final label wording adjustment; that adjustment changed existing strings only and added no IDs.
+- Not verified: the menu C++ could not be syntax-checked here because Vulkan headers are unavailable. The configuration probe was not executed, and the Windows runtime, settings persistence, log-folder action and gameplay have not been built or tested. The earlier launcher-check attempt on this Mac is also limited by Python 3.9.6 and missing `tomllib`, `lz4` and `cryptography`.
+- Next: on the maintainer's Windows setup, build with:
+
+  ```
+  .venv\Scripts\python tools\build_game.py
+  ```
+
+  Expected final output includes `build\game\karpur.exe: file ... MiB`. Then test all five F1 tabs, setting persistence and restart markers, Reset All, log path/open action, PC Settings -> Controls, `MENU_LOCK=1`, and the existing optional save-slot flow. Do not claim a working Windows build or gameplay validation until those checks pass.
+
 ## Listing the real save folders for RecompLauncher (2026-11-27)
 
 - [recomplauncher.json](../recomplauncher.json) `saves` named `{install}/../KarPur/build/profile/save`, a folder outside the installation. The Windows launcher builds in `{install}/KarPur` (`Builder.Root`, [launcher/Builder.cs](../launcher/Builder.cs)) and the game's default profile is `<root>/build/profile` ([tools/build_game.py](../tools/build_game.py) `paths['profile']`), so RecompLauncher's backups, cloud saves and Uninstall's "keep saves" missed Windows saves.

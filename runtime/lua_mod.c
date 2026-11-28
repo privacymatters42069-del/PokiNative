@@ -285,11 +285,11 @@ void lua_mod_command(const char *text, uint64_t n) {
     size_t len = (size_t)(n - (sizeof tag - 1));
     while (len && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' || cmd[len - 1] == ' ' || !cmd[len - 1])) len--;
     if (len == 13 && !memcmp(cmd, "pc_page_ready", 13)) {
-        // The F1 menu is locked only once the page that replaces it is in place: the page's script runs and its texts
-        // and button come from the patch list. Any other start keeps F1, so the settings stay reachable.
-        int lock = data_patch_ui_loaded() && rt_knob("MENU_LOCK", "1");
+        // The Controls-only lock is opt-in and applies once the replacement page is ready.
+        int lock = data_patch_ui_loaded() && rt_knob("MENU_LOCK", "0");
         if (lock) menu_lock();
-        rt_log("lua mod: PC settings page ready; F1 menu %s", lock ? "locked (TOTK_MENU_LOCK=0 keeps it)" : "stays");
+        rt_log("lua mod: PC settings page ready; F1 menu %s",
+               lock ? "limited to Controls (TOTK_MENU_LOCK=0 keeps all settings)" : "keeps all settings");
     } else if (len == 13 && !memcmp(cmd, "open_controls", 13)) {
         rt_log("lua mod: PC settings page opens the Controls tab");
         menu_open_controls();
