@@ -2,6 +2,12 @@ name: Test build
 
 on:
   workflow_dispatch:
+    inputs:
+      launcher_version:
+        description: "Optional numeric test version, for example 0.4.6.8; blank uses the project version"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -10,5 +16,8 @@ jobs:
   build:
     name: Build Windows and Linux test artifacts
     uses: ./.github/workflows/build-launcher-artifacts.yml
+    with:
+      launcher_version: ${{ inputs.launcher_version }}
+      launcher_build_label: TEST
     permissions:
       contents: read

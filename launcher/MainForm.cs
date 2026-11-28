@@ -250,7 +250,7 @@ partial class MainForm : Form
             string builtWith = builtNow ? Builder.BuiltWith(targetBox.Text) : "";
             if (builtNow && !Program.DesignCheck && !Builder.IsSourceRoot(Builder.Root(targetBox.Text)) && (this.updated || builtWith != Program.Version))
             {
-                status.Text = $"Updated to version {Program.Version}. Rebuilding what changed …";
+                status.Text = $"Updated to version {Program.DisplayVersion}. Rebuilding what changed …";
                 await Build(repair: false);
             }
         };
@@ -273,7 +273,7 @@ partial class MainForm : Form
         logo.Location = new Point(18, 20);
         var title = Theme.Label("PokiNative", 17f, style: FontStyle.Bold);
         title.Location = new Point(70, 20);
-        var version = Theme.Label($"Version {Program.Version}", 9f, muted: true);
+        var version = Theme.Label($"Version {Program.DisplayVersion}", 9f, muted: true);
         version.Location = new Point(72, 48);
         side.Controls.Add(logo);
         side.Controls.Add(title);
@@ -675,7 +675,7 @@ partial class MainForm : Form
     {
         var page = new Panel { BackColor = Theme.Back };
         var top = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Card };
-        var installed = Theme.Label($"Installed: version {Program.Version}", 11f);
+        var installed = Theme.Label($"Installed: version {Program.DisplayVersion}", 11f);
         installed.Margin = new Padding(0, 0, 0, 14);
         var row = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0) };
         row.Controls.Add(checkUpdate);
@@ -720,7 +720,7 @@ partial class MainForm : Form
         Fill(fbDlc, YesNo);
         Fill(fbWindows, Windows);
         fbLauncher.ReadOnly = true;
-        fbLauncher.Text = Program.Version;
+        fbLauncher.Text = Program.DisplayVersion;
         var grid = Grid(4);
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -1241,7 +1241,7 @@ partial class MainForm : Form
                 notes.Text = release.Notes.Replace("\n", Environment.NewLine);
                 notes.Visible = release.Notes.Trim() != "";
             }
-            else updateStatus.Text = $"You have the newest version ({Program.Version}).";
+            else updateStatus.Text = $"You have the newest version ({Program.DisplayVersion}).";
         }
         catch (Exception e) { updateStatus.Text = "Could not check for updates: " + e.Message; }
         checkUpdate.Enabled = true;

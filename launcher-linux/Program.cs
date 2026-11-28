@@ -3,6 +3,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Themes.Fluent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 
 namespace KarPurLinux;
 
@@ -11,6 +12,15 @@ static class Program
     static readonly System.Version AssemblyVersion =
         typeof(Program).Assembly.GetName().Version ?? new System.Version(0, 1, 0, 0);
     public static string Version => AssemblyVersion.ToString();
+    public static string DisplayVersion
+    {
+        get
+        {
+            string? label = typeof(Program).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(attribute => attribute.Key == "KarPurBuildLabel")?.Value;
+            return string.IsNullOrWhiteSpace(label) ? Version : $"{Version} ({label})";
+        }
+    }
     public static string BuildRevision => Version;
     [STAThread]
     public static int Main(string[] args)

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Reflection;
 using KarPurLauncher;
 
 namespace KarPurLinux;
@@ -69,6 +70,11 @@ static class SelfCheck
             Check(Program.Version == typeof(Program).Assembly.GetName().Version?.ToString() &&
                 Program.BuildRevision == Program.Version,
                 "Linux launcher version follows the project assembly version");
+            string? buildLabel = typeof(Program).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(attribute => attribute.Key == "KarPurBuildLabel")?.Value;
+            Check(Program.DisplayVersion == (string.IsNullOrWhiteSpace(buildLabel)
+                    ? Program.Version : $"{Program.Version} ({buildLabel})"),
+                "Linux launcher displays its build label separately from its numeric version");
             Check(MainWindow.IssuesUrl == "https://github.com/privacymatters42069-del/PokiNative/issues/new" &&
                 MainWindow.PullRequestsUrl == "https://github.com/privacymatters42069-del/PokiNative/pulls",
                 "Linux launcher GitHub links target PokiNative");

@@ -1,5 +1,15 @@
 # Progress
 
+## Setting a per-run Test build launcher version (2026-11-28)
+
+- Added the optional `launcher_version` input to [.github/workflows/test-build.yml](../.github/workflows/test-build.yml) and passed it to the shared [.github/workflows/build-launcher-artifacts.yml](../.github/workflows/build-launcher-artifacts.yml). The input accepts three or four numeric components (for example, `0.4.6.8`); blank keeps the committed project versions.
+- The Test build now also passes a fixed `TEST` display label through the shared workflow. The Windows and Linux projects expose it as assembly metadata, and the launcher UI displays it beside the numeric version. The numeric assembly version remains unchanged, so update comparisons and install/build markers continue to use numeric versions. Release workflow calls leave the label blank.
+- Added [tools/set_launcher_version.py](../tools/set_launcher_version.py) to validate the input and update the `<Version>` element in both launcher project files on each CI runner only. It prevalidates both project files before writing. The repository and release version remain unchanged, and the release workflow receives the blank default unless explicitly given an input.
+- Added [tests/test_launcher_version.py](../tests/test_launcher_version.py) and run it in the shared validation job. The tests cover valid three- and four-part versions, invalid formats, duplicate project version tags, and updating both project files without changing unrelated content.
+- Updated [README.md](../README.md) with the optional input and clarified that it only labels that run's Windows and Linux test artifacts.
+- Verification: `python3 tests/test_launcher_version.py` passed (2 tests); `python3 tools/check_content.py` passed; Python compilation of the launcher build scripts passed; `git diff --check` passed; Ruby YAML parsing and structural checks confirmed the manual version input and test-label routing, with release calls defaulting to no label. Local .NET builds of both launcher projects succeeded with `LauncherBuildLabel=TEST`, and generated assembly metadata contains the label. The Linux launcher self-check passed all 29 checks, including the display-label check. The Windows UI and the actual GitHub Actions artifacts still need user-side confirmation.
+- Next: push the `testing` branch, start **Actions > Test build**, enter a test version such as `0.4.6.8`, and confirm both downloaded launchers display `0.4.6.8 (TEST)`. A blank input should display the committed project version with `(TEST)`.
+
 ## Keeping the full F1 menu independent of INI settings (2026-11-28)
 
 - Commit `5d00d83` changed the F1 default to the full settings menu, but its `rt_knob("MENU_LOCK", "0")` lookup could still honor an old `MENU_LOCK=1` value in `totk.ini`.

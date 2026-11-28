@@ -215,6 +215,8 @@ def main():
     publish.mkdir(parents=True, exist_ok=True)
     publish_args = ['dotnet', 'publish', ROOT / 'launcher-linux' / 'KarPurLauncher.Linux.csproj', '-r', 'linux-x64',
                     '-c', 'Release', '--self-contained', 'true']
+    if os.environ.get('LAUNCHER_BUILD_LABEL'):
+        publish_args.append(f'-p:LauncherBuildLabel={os.environ["LAUNCHER_BUILD_LABEL"]}')
     if a.out:
         publish_args += ['--artifacts-path', DIST / '.build' / 'dotnet']
     publish_args += ['-o', publish]

@@ -29,6 +29,7 @@
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <AssemblyMetadata Include="KarPurBuildLabel" Value="$(LauncherBuildLabel)" Condition="'$(LauncherBuildLabel)' != ''" />
     <EmbeddedResource Include="pins.json" LogicalName="pins.json" />
     <!-- Edition artwork supplied by the maintainer for the launcher. -->
     <EmbeddedResource Include="assets/banner-violet.jpg" LogicalName="banner-violet.jpg" />

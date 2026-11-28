@@ -12,6 +12,7 @@ never leave their PC. Needs the .NET 10 SDK.
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -68,6 +69,8 @@ def main():
             z.write(ROOT / n, n)
     print(f'{payload}: {len(files)} files, {payload.stat().st_size / 2**20:.1f} MiB')
     command = ['dotnet', 'publish', str(ROOT / 'launcher' / 'KarPurLauncher.csproj'), '-c', 'Release']
+    if os.environ.get('LAUNCHER_BUILD_LABEL'):
+        command.append(f'-p:LauncherBuildLabel={os.environ["LAUNCHER_BUILD_LABEL"]}')
     if args.out:
         command.extend(['--artifacts-path', str(build_dir / 'artifacts')])
     command.extend([f'-p:PayloadZip={payload}', f'-p:OutputPath={build_dir / "launcher-build"}',

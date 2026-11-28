@@ -82,7 +82,7 @@ sealed class MainWindow : Window
         brand.Children.Add(sidebarLogo);
         brandTitle.Foreground = Brush.Parse(Scarlet() ? "#FFA9B4" : "#C9ADFF");
         var brandText = Stack(brandTitle,
-            Text("Linux Launcher · " + Program.Version, 11, "#B1A6C8"));
+            Text("Linux Launcher · " + Program.DisplayVersion, 11, "#B1A6C8"));
         brandText.Spacing = 2;
         Grid.SetColumn(brandText, 1); brand.Children.Add(brandText);
         sidebar.Children.Add(brand);
@@ -817,7 +817,7 @@ sealed class MainWindow : Window
         var result = Text("Checking GitHub for a Linux release …", 16, "#C1B7D1");
         var actions = new StackPanel { Spacing = 12 };
         Page("Update", "Launcher updates",
-            Card(Stack(Text("Installed launcher: " + Program.Version, 20), result, actions)));
+            Card(Stack(Text("Installed launcher: " + Program.DisplayVersion, 20), result, actions)));
         async Task Check()
         {
             result.Text = "Checking GitHub for a Linux release …";
@@ -832,7 +832,7 @@ sealed class MainWindow : Window
                 }
                 if (release.Version <= Version.Parse(Program.Version))
                 {
-                    result.Text = "You have the latest Linux launcher (" + Program.Version + ").";
+                    result.Text = "You have the latest Linux launcher (" + Program.DisplayVersion + ").";
                     return;
                 }
                 result.Text = "Linux launcher " + release.Version + " is available.";
